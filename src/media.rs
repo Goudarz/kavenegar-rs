@@ -193,11 +193,15 @@ struct MediaListing {
 
 impl MediaListing {
     fn into_page(self) -> Page<Media> {
-        // `i64::div_ceil` is still unstable, and these are never negative.
-        let total_pages = if self.size > 0 {
-            (self.total + self.size - 1) / self.size
-        } else {
-            1
+        // `i64::div_ceil` is still unstable. Values come off the wire, so the
+        // addition is checked rather than trusted not to overflow.
+        let total_pages = match self.size {
+            size if size > 0 => self
+                .total
+                .checked_add(size - 1)
+                .map_or(1, |sum| sum / size)
+                .max(1),
+            _ => 1,
         };
         Page {
             items: self.list,

@@ -31,7 +31,7 @@ impl<'a> SmsService<'a> {
     /// # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
     /// let sent = client
     ///     .sms()
-    ///     .send(["09121234567", "09131234567"], "کد شما: ۱۲۳۴")
+    ///     .send(["09177788155", "09131234567"], "کد شما: ۱۲۳۴")
     ///     .sender("10004346")
     ///     .tag("signup")
     ///     .await?;
@@ -66,7 +66,7 @@ impl<'a> SmsService<'a> {
     /// let sent = client
     ///     .sms()
     ///     .send_array(
-    ///         ["09121234567", "09131234567"],
+    ///         ["09177788155", "09131234567"],
     ///         ["پیام اول", "پیام دوم"],
     ///     )
     ///     .sender("10004346")

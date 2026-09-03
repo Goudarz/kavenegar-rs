@@ -74,7 +74,7 @@ impl<'a> VerifyService<'a> {
     /// # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
     /// let sent = client
     ///     .verify()
-    ///     .lookup("09121234567", "verify-login", "48391")
+    ///     .lookup("09177788155", "verify-login", "48391")
     ///     .await?;
     /// println!("status: {}", sent.status);
     /// # Ok(())
@@ -849,7 +849,7 @@ mod tests {
         let c = client();
         let (_, params) = c
             .verify()
-            .lookup("09121234567", "verify-login", "48391")
+            .lookup("09177788155", "verify-login", "48391")
             .token10("Ali Rezaei")
             .channel(VerifyChannel::Call)
             .into_params()
@@ -861,7 +861,7 @@ mod tests {
                 .find(|(n, _)| *n == k)
                 .map(|(_, v)| v.as_str())
         };
-        assert_eq!(get("receptor"), Some("09121234567"));
+        assert_eq!(get("receptor"), Some("09177788155"));
         assert_eq!(get("template"), Some("verify-login"));
         assert_eq!(get("token"), Some("48391"));
         assert_eq!(get("token10"), Some("Ali Rezaei"));

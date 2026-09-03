@@ -25,7 +25,7 @@ impl<'a> CallService<'a> {
     /// # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
     /// let calls = client
     ///     .call()
-    ///     .text_to_speech(["09121234567"], "سفارش شما ارسال شد")
+    ///     .text_to_speech(["09177788155"], "سفارش شما ارسال شد")
     ///     .repeat(2)
     ///     .await?;
     /// # Ok(())

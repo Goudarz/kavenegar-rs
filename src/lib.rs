@@ -14,7 +14,7 @@
 //! # async fn run() -> Result<(), kavenegar::Error> {
 //! let client = Kavenegar::new(std::env::var("KAVENEGAR_API_KEY").unwrap());
 //!
-//! let sent = client.sms().send(["09121234567"], "سلام دنیا").await?;
+//! let sent = client.sms().send(["09177788155"], "سلام دنیا").await?;
 //! println!("queued as {}", sent[0].message_id);
 //! # Ok(())
 //! # }
@@ -30,7 +30,7 @@
 //! # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
 //! let sent = client
 //!     .sms()
-//!     .send(["09121234567"], "کد شما: ۱۲۳۴")
+//!     .send(["09177788155"], "کد شما: ۱۲۳۴")
 //!     .sender("10004346")
 //!     .message_type(MessageType::Flash)
 //!     .tag("signup")
@@ -47,7 +47,7 @@
 //!
 //! ```no_run
 //! # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
-//! let sent = client.verify().lookup("09121234567", "verify-login", "48391").await?;
+//! let sent = client.verify().lookup("09177788155", "verify-login", "48391").await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -60,7 +60,7 @@
 //! ```no_run
 //! # use kavenegar::{ApiStatus, Error};
 //! # async fn run(client: kavenegar::Kavenegar) -> Result<(), Error> {
-//! match client.sms().send(["09121234567"], "سلام").await {
+//! match client.sms().send(["09177788155"], "سلام").await {
 //!     Ok(sent) => println!("queued as {}", sent[0].message_id),
 //!     Err(Error::Api(e)) if e.status() == ApiStatus::InsufficientCredit => {
 //!         eprintln!("top up the account: {}", e.message());
@@ -102,6 +102,8 @@
 #![doc(html_root_url = "https://docs.rs/kavenegar/0.1.0")]
 #![warn(missing_debug_implementations, rust_2018_idioms)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
+// Test code may assert loudly; library code may not.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod client;
 pub mod error;

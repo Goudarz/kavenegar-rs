@@ -12,7 +12,7 @@ homepage = "https://github.com/goudarz/kavenegar-rs"
 license = "MIT"
 keywords = ["kavenegar", "sms", "otp", "iran", "api-client"]
 categories = ["api-bindings", "asynchronous", "web-programming::http-client"]
-exclude = [".github/", "*.log", "RELEASE_NOTES.md"]
+exclude = [".github/", "*.log", "RELEASE_NOTES.md", "deny.toml"]
 
 [dependencies]
 reqwest = { version = "0.13.4", default-features = false, features = [
@@ -70,3 +70,17 @@ rustdoc-args = ["--cfg", "docsrs"]
 [lints.rust]
 missing_docs = "warn"
 unsafe_code = "forbid"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+# A library should hand a Result back, not abort the caller's process.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Values arriving from the network must not silently wrap or truncate.
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
