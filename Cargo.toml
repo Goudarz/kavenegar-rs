@@ -1,0 +1,72 @@
+[package]
+name = "kavenegar"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["Goudarz Jafari <hi@goudarzjafari.com>"]
+description = "Async Rust client for the Kavenegar SMS, OTP and voice-call API"
+documentation = "https://docs.rs/kavenegar"
+readme = "README.md"
+repository = "https://github.com/goudarz/kavenegar-rs"
+homepage = "https://github.com/goudarz/kavenegar-rs"
+license = "MIT"
+keywords = ["kavenegar", "sms", "otp", "iran", "api-client"]
+categories = ["api-bindings", "asynchronous", "web-programming::http-client"]
+exclude = [".github/", "*.log", "RELEASE_NOTES.md"]
+
+[dependencies]
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+    "query",
+    "form",
+    "http2",
+    "charset",
+    "system-proxy",
+] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+tokio = { version = "1", features = [
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "io-util",
+    "time",
+    "fs",
+] }
+
+[features]
+default = ["rustls-tls", "full"]
+
+# Every service. This is what you get by default.
+full = ["sms", "verify", "call", "account", "line", "media", "utils"]
+
+# Sending messages, and querying their status and history.
+sms = []
+# One-time passwords and verification templates.
+verify = []
+# Text-to-speech voice calls.
+call = []
+# Credit, expiry and account settings.
+account = []
+# The per-line blocked-recipient list.
+line = []
+# Media files for messenger lines. Pulls in multipart upload support.
+media = ["reqwest/multipart"]
+# Server time and other utilities.
+utils = []
+
+# TLS backed by rustls; no OpenSSL on the build machine.
+rustls-tls = ["reqwest/rustls"]
+# TLS backed by the platform's native stack (schannel/Secure Transport/OpenSSL).
+native-tls = ["reqwest/default-tls"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
