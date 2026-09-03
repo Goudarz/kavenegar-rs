@@ -6,6 +6,12 @@ use std::fmt;
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Anything that can go wrong while talking to the Kavenegar API.
+///
+/// # Logging
+///
+/// `Display` is safe to log: it never contains the API key, and never contains
+/// a response body. `Debug` also omits the API key, but does include response
+/// bodies, which may carry recipient numbers or message text.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -14,12 +20,25 @@ pub enum Error {
     Api(#[from] ApiError),
 
     /// The request never produced a usable HTTP response.
+    ///
+    /// The underlying `reqwest` error is deliberately not exposed: Kavenegar
+    /// puts the API key in the URL path, and `reqwest` prints the URL in its
+    /// error messages, so passing it through would write the key into any log
+    /// that formats this error.
     #[error("http request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    Http(TransportError),
 
     /// The body arrived but could not be decoded into the expected shape.
     ///
-    /// The raw `body` is retained so callers can log it if the API changes.
+    /// The raw `body` is retained so callers can diagnose an API change.
+    ///
+    /// # Personal data
+    ///
+    /// A Kavenegar response body routinely contains recipient phone numbers,
+    /// and may contain message text — including a one-time password. The body
+    /// is kept out of `Display`, so `error!("{e}")` is safe to log, but it is
+    /// present in `Debug`: treat `error!("{e:?}")` as a log line carrying
+    /// personal data.
     #[error("could not decode response body: {source}")]
     Decode {
         /// The underlying serde failure.
@@ -31,6 +50,9 @@ pub enum Error {
 
     /// The server answered with an error status and a body that was not the
     /// usual JSON envelope — typically a proxy or gateway page.
+    ///
+    /// As with [`Error::Decode`], `body` may carry personal data and is shown
+    /// by `Debug` but not by `Display`.
     #[error("server returned HTTP {status} with an unrecognised body")]
     UnexpectedStatus {
         /// The HTTP status code.
@@ -48,6 +70,13 @@ pub enum Error {
         body: String,
     },
 
+    /// The response body exceeded the size this client will buffer.
+    #[error("response body exceeded the {limit} byte limit")]
+    ResponseTooLarge {
+        /// The ceiling that was hit, in bytes.
+        limit: usize,
+    },
+
     /// A parameter was rejected locally, before any request was sent.
     #[error("invalid parameter `{parameter}`: {reason}")]
     InvalidParameter {
@@ -59,6 +88,11 @@ pub enum Error {
 }
 
 impl Error {
+    /// Wraps a transport failure, scrubbing the API key from its message.
+    pub(crate) fn transport(source: reqwest::Error, api_key: &str) -> Self {
+        Error::Http(TransportError::new(&source, api_key))
+    }
+
     pub(crate) fn invalid(parameter: &'static str, reason: impl Into<String>) -> Self {
         Error::InvalidParameter {
             parameter,
@@ -87,6 +121,108 @@ impl Error {
             _ => false,
         }
     }
+}
+
+/// A transport-level failure, with the request URL stripped out.
+///
+/// Kavenegar authenticates by putting the API key in the URL path, so any
+/// error carrying that URL carries the credential with it. This type keeps the
+/// diagnosis — whether the failure was a timeout, a refused connection, a TLS
+/// problem — while guaranteeing the key never reaches a log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransportError {
+    kind: TransportKind,
+    detail: String,
+}
+
+/// What went wrong at the transport level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TransportKind {
+    /// The connection could not be established.
+    Connect,
+    /// The request or response exceeded the timeout.
+    Timeout,
+    /// The connection failed partway through the body.
+    Body,
+    /// Too many redirects, or a redirect that could not be followed.
+    Redirect,
+    /// Anything else.
+    Other,
+}
+
+impl TransportError {
+    fn new(source: &reqwest::Error, api_key: &str) -> Self {
+        let kind = if source.is_timeout() {
+            TransportKind::Timeout
+        } else if source.is_connect() {
+            TransportKind::Connect
+        } else if source.is_body() {
+            TransportKind::Body
+        } else if source.is_redirect() {
+            TransportKind::Redirect
+        } else {
+            TransportKind::Other
+        };
+
+        // Take the innermost cause: it describes the real failure without
+        // repeating the URL that the outer layers embed.
+        let mut deepest: &dyn std::error::Error = source;
+        while let Some(next) = deepest.source() {
+            deepest = next;
+        }
+
+        Self {
+            kind,
+            detail: redact(&deepest.to_string(), api_key),
+        }
+    }
+
+    /// What kind of transport failure this was.
+    pub fn kind(&self) -> TransportKind {
+        self.kind
+    }
+
+    /// The underlying cause, with the API key removed.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// Whether the request timed out.
+    pub fn is_timeout(&self) -> bool {
+        self.kind == TransportKind::Timeout
+    }
+
+    /// Whether the connection could not be established.
+    pub fn is_connect(&self) -> bool {
+        self.kind == TransportKind::Connect
+    }
+}
+
+impl fmt::Display for TransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let what = match self.kind {
+            TransportKind::Connect => "could not connect",
+            TransportKind::Timeout => "timed out",
+            TransportKind::Body => "the connection dropped mid-body",
+            TransportKind::Redirect => "the redirect could not be followed",
+            TransportKind::Other => "the request failed",
+        };
+        write!(f, "{what}: {}", self.detail)
+    }
+}
+
+impl std::error::Error for TransportError {}
+
+/// Removes the API key from a string that is about to be shown to a human.
+///
+/// Short keys are dropped rather than matched, so a one- or two-character key
+/// cannot turn every stray character in the message into a redaction.
+pub(crate) fn redact(text: &str, api_key: &str) -> String {
+    if api_key.len() < 8 {
+        return text.to_owned();
+    }
+    text.replace(api_key, "[REDACTED]")
 }
 
 /// A failure reported by Kavenegar inside the `return` envelope.

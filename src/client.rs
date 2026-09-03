@@ -30,7 +30,7 @@ use serde_json::Value;
 ))]
 use serde::de::DeserializeOwned;
 
-use crate::error::{ApiError, ApiStatus, Error, Result};
+use crate::error::{ApiError, ApiStatus, Error, Result, redact};
 #[cfg(any(feature = "sms", feature = "verify", feature = "line"))]
 use crate::page::{Page, PageMeta};
 
@@ -52,6 +52,12 @@ use crate::verify::VerifyService;
 /// The public Kavenegar API root.
 pub const DEFAULT_BASE_URL: &str = "https://api.kavenegar.com/v1";
 
+/// The largest response body this client will buffer, in bytes.
+///
+/// Kavenegar's own responses are a few kilobytes at most; the ceiling exists
+/// so a hostile or broken endpoint cannot exhaust memory.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 /// A boxed future, returned when awaiting a request builder.
 pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
 
@@ -66,7 +72,7 @@ pub type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T
 /// ```no_run
 /// # async fn run() -> Result<(), kavenegar::Error> {
 /// let client = kavenegar::Kavenegar::new("your-api-key");
-/// let sent = client.sms().send(["09121234567"], "سلام").await?;
+/// let sent = client.sms().send(["09177788155"], "سلام").await?;
 /// println!("message id: {}", sent[0].message_id);
 /// # Ok(())
 /// # }
@@ -89,6 +95,10 @@ impl Kavenegar {
     ///
     /// Panics if the underlying TLS backend cannot be initialised. Use
     /// [`Kavenegar::builder`] if you need to handle that failure.
+    #[expect(
+        clippy::expect_used,
+        reason = "documented panic; Kavenegar::builder returns a Result for callers who need one"
+    )]
     pub fn new(api_key: impl Into<String>) -> Self {
         Self::builder(api_key)
             .build()
@@ -247,11 +257,12 @@ impl Kavenegar {
 
         // Absent metadata is not an error: it just means one page.
         let meta: PageMeta = if metadata.is_null() {
+            let counted = i64::try_from(items.len()).unwrap_or(i64::MAX);
             PageMeta {
-                total_count: items.len() as i64,
+                total_count: counted,
                 current_page: 1,
                 total_pages: 1,
-                page_size: items.len() as i64,
+                page_size: counted,
             }
         } else {
             serde_json::from_value(metadata).map_err(|source| Error::Decode { source, body })?
@@ -272,7 +283,14 @@ impl Kavenegar {
         let url = self.endpoint(module, method);
         let form = reqwest::multipart::Form::new().part(part_name, part);
 
-        let response = self.inner.http.post(&url).multipart(form).send().await?;
+        let response = self
+            .inner
+            .http
+            .post(&url)
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| Error::transport(e, &self.inner.api_key))?;
         let (entries, _, body) = self.unwrap_envelope(response).await?;
 
         let value = match entries {
@@ -310,14 +328,61 @@ impl Kavenegar {
 
         // POST with a form body: Persian text and long messages do not
         // survive a query string reliably.
-        let response = self.inner.http.post(&url).form(&params).send().await?;
+        let response = self
+            .inner
+            .http
+            .post(&url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| Error::transport(e, &self.inner.api_key))?;
         self.unwrap_envelope(response).await
+    }
+
+    /// Reads a response body, refusing to buffer more than [`MAX_RESPONSE_BYTES`].
+    ///
+    /// A compromised or misbehaving endpoint should not be able to exhaust the
+    /// caller's memory, so the length is enforced while streaming rather than
+    /// trusting `Content-Length`.
+    async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<String> {
+        let too_large = || Error::ResponseTooLarge {
+            limit: MAX_RESPONSE_BYTES,
+        };
+
+        if response
+            .content_length()
+            .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(too_large());
+        }
+
+        let mut buf: Vec<u8> = Vec::new();
+        loop {
+            let chunk = response
+                .chunk()
+                .await
+                .map_err(|e| Error::transport(e, &self.inner.api_key))?;
+            let Some(chunk) = chunk else { break };
+
+            if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(too_large());
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+
+    /// Trims a body for an error and strips the API key, in case the server
+    /// ever echoes it back.
+    fn sanitize(&self, body: &str) -> String {
+        redact(&truncate(body), &self.inner.api_key)
     }
 
     /// Checks the `return` block and hands back the payload.
     async fn unwrap_envelope(&self, response: reqwest::Response) -> Result<(Value, Value, String)> {
         let http_status = response.status();
-        let body = response.text().await?;
+        let body = self.read_body_capped(response).await?;
 
         let envelope: Envelope = match serde_json::from_str(&body) {
             Ok(envelope) => envelope,
@@ -327,12 +392,12 @@ impl Kavenegar {
                 if !http_status.is_success() {
                     return Err(Error::UnexpectedStatus {
                         status: http_status.as_u16(),
-                        body: truncate(&body),
+                        body: self.sanitize(&body),
                     });
                 }
                 return Err(Error::Decode {
                     source,
-                    body: truncate(&body),
+                    body: self.sanitize(&body),
                 });
             }
         };
@@ -342,7 +407,7 @@ impl Kavenegar {
             return Err(ApiError::new(status, envelope.ret.message).into());
         }
 
-        Ok((envelope.entries, envelope.metadata, truncate(&body)))
+        Ok((envelope.entries, envelope.metadata, self.sanitize(&body)))
     }
 }
 
@@ -451,25 +516,67 @@ impl ClientBuilder {
             return Err(Error::invalid("api_key", "must not be empty"));
         }
 
+        let base_url = self.base_url.trim_end_matches('/').to_owned();
+        check_base_url(&base_url)?;
+
         let http = match self.http {
             Some(http) => http,
             None => {
                 let mut builder = reqwest::Client::builder()
-                    .user_agent(concat!("kavenegar-rs/", env!("CARGO_PKG_VERSION")));
+                    .user_agent(concat!("kavenegar-rs/", env!("CARGO_PKG_VERSION")))
+                    // The API key travels in the URL path, so a redirect would
+                    // hand it to whatever host the `Location` header names.
+                    .redirect(reqwest::redirect::Policy::none())
+                    // Bound the handshake separately: without this, an
+                    // unreachable host holds the request for the full timeout.
+                    .connect_timeout(Duration::from_secs(10));
                 if let Some(timeout) = self.timeout {
                     builder = builder.timeout(timeout);
                 }
-                builder.build()?
+                builder
+                    .build()
+                    .map_err(|e| Error::transport(e, &self.api_key))?
             }
         };
 
         Ok(Kavenegar {
             inner: Arc::new(Inner {
                 api_key: self.api_key,
-                base_url: self.base_url.trim_end_matches('/').to_owned(),
+                base_url,
                 http,
             }),
         })
+    }
+}
+
+/// Rejects a base URL that would put the API key on the wire in clear text.
+///
+/// Plain HTTP is allowed only for loopback, so the stub servers used in tests
+/// keep working while a real deployment cannot silently downgrade.
+fn check_base_url(base_url: &str) -> Result<()> {
+    let url = reqwest::Url::parse(base_url)
+        .map_err(|e| Error::invalid("base_url", format!("not a valid URL: {e}")))?;
+
+    let loopback = url.host_str().is_some_and(|host| {
+        // `host_str` keeps the brackets around an IPv6 literal.
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if loopback => Ok(()),
+        "http" => Err(Error::invalid(
+            "base_url",
+            "refusing plain HTTP to a non-loopback host: the API key travels              in the URL path and would be sent in clear text",
+        )),
+        other => Err(Error::invalid(
+            "base_url",
+            format!("unsupported scheme `{other}`; expected https"),
+        )),
     }
 }
 
