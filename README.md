@@ -35,6 +35,7 @@ voice-call API.
 - [All methods](#all-methods)
 - [Cargo features](#cargo-features)
 - [Testing](#testing)
+- [Security](#security)
 - [Things worth knowing](#things-worth-knowing)
 - [License](#license)
 
@@ -446,6 +447,34 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo test --all-features
 cargo doc --all-features --no-deps
 ```
+
+## Security
+
+The API key is the asset here, and Kavenegar puts it **in the URL path** rather
+than a header. A URL travels further than a header does, so this crate:
+
+- **Keeps the URL out of error messages.** `reqwest` embeds the request URL in
+  its own errors; passing those through would write your key into every log
+  line that formats an error. Transport failures are re-wrapped to keep the
+  diagnosis and drop the URL.
+- **Redacts the key** from `Debug` output and from any response body kept for
+  diagnostics.
+- **Refuses plain HTTP** to non-loopback hosts, so a misconfigured `base_url`
+  cannot put the key on the wire in clear text.
+- **Never follows redirects**, which would hand the path — and the key in it —
+  to a host the server chooses.
+- **Caps response bodies at 8 MiB while streaming**, so a reply with no
+  declared length cannot exhaust memory.
+
+Each of these is covered by a test in [`tests/security.rs`](tests/security.rs).
+
+One thing to know when logging: `Display` on `Error` is safe, but `Debug`
+includes response bodies, which routinely contain recipient phone numbers and
+may contain message text. Prefer `error!("{e}")` over `error!("{e:?}")` in
+production, or treat those logs as personal data.
+
+The full policy, threat model, and reporting address are in
+[SECURITY.md](SECURITY.md).
 
 ## Things worth knowing
 

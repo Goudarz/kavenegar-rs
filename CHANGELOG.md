@@ -42,6 +42,15 @@ Initial release. Covers all 32 endpoints documented at
   `%token` presence, and the 200-recipient blocked-list cap.
 - Sub-account support (`sub_account_api_key`, `sub_account_local_id`) on every
   `verify` template endpoint, for resellers managing a customer's templates.
+- Hardening against the API key escaping through a log: transport errors are
+  re-wrapped as `TransportError` so the request URL — which contains the key —
+  never reaches `Display`, `Debug` or the error source chain. Response bodies
+  kept for diagnostics are scrubbed of the key too.
+- `base_url` refuses plain HTTP to non-loopback hosts, redirects are not
+  followed, and response bodies are capped at `MAX_RESPONSE_BYTES` (8 MiB)
+  while streaming.
+- `SECURITY.md` with the threat model and reporting address; CI runs
+  `cargo audit` and `cargo deny` on every push and weekly.
 - Per-service Cargo features (`sms`, `verify`, `call`, `account`, `line`,
   `media`, `utils`, and `full`), plus `rustls-tls` (default) and `native-tls`.
 

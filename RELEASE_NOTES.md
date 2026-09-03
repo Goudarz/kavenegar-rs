@@ -28,10 +28,10 @@ async fn main() -> Result<(), kavenegar::Error> {
     let client = Kavenegar::new(std::env::var("KAVENEGAR_API_KEY").unwrap());
 
     // Send an SMS.
-    let sent = client.sms().send(["09121234567"], "Hello!").await?;
+    let sent = client.sms().send(["09177788155"], "Hello!").await?;
 
     // Send a one-time password through a template.
-    let otp = client.verify().lookup("09121234567", "verify-login", "48391").await?;
+    let otp = client.verify().lookup("09177788155", "verify-login", "48391").await?;
 
     Ok(())
 }
