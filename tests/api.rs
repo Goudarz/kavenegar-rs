@@ -4,6 +4,7 @@
 //! `return` envelope, and the fact that Kavenegar is inconsistent about
 //! whether `entries` is an object, an array, or absent entirely.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::sync::{Arc, Mutex};
 
 use kavenegar::{ApiStatus, BlockedState, Error, Kavenegar, MessageStatus};
@@ -102,14 +103,14 @@ async fn send_parses_entries_and_posts_a_form() {
         r#"{"return":{"status":200,"message":"تایید شد"},
             "entries":[{"messageid":85463238,"message":"hi","status":1,
                         "statustext":"در صف ارسال","sender":"10004346",
-                        "receptor":"09121234567","date":1770000000,"cost":120}]}"#,
+                        "receptor":"09177788155","date":1770000000,"cost":120}]}"#,
     )
     .await;
 
     let sent = stub
         .client()
         .sms()
-        .send(["09121234567"], "hi")
+        .send(["09177788155"], "hi")
         .sender("10004346")
         .await
         .unwrap();
@@ -124,7 +125,7 @@ async fn send_parses_entries_and_posts_a_form() {
         request.starts_with("POST /test-key/sms/send.json "),
         "{request}"
     );
-    assert!(request.contains("receptor=09121234567"), "{request}");
+    assert!(request.contains("receptor=09177788155"), "{request}");
     assert!(request.contains("sender=10004346"), "{request}");
 }
 
@@ -139,7 +140,7 @@ async fn a_failure_status_becomes_an_api_error() {
     let err = stub
         .client()
         .sms()
-        .send(["09121234567"], "hi")
+        .send(["09177788155"], "hi")
         .await
         .unwrap_err();
 
@@ -171,14 +172,14 @@ async fn lookup_accepts_a_bare_entries_object() {
     let stub = Stub::start(
         "200 OK",
         r#"{"return":{"status":200,"message":"ok"},
-            "entries":{"messageid":1,"status":5,"receptor":"09121234567"}}"#,
+            "entries":{"messageid":1,"status":5,"receptor":"09177788155"}}"#,
     )
     .await;
 
     let sent = stub
         .client()
         .verify()
-        .lookup("09121234567", "verify-login", "48391")
+        .lookup("09177788155", "verify-login", "48391")
         .await
         .unwrap();
 
@@ -191,14 +192,14 @@ async fn lookup_also_accepts_entries_wrapped_in_an_array() {
     let stub = Stub::start(
         "200 OK",
         r#"{"return":{"status":200,"message":"ok"},
-            "entries":[{"messageid":2,"status":10,"receptor":"09121234567"}]}"#,
+            "entries":[{"messageid":2,"status":10,"receptor":"09177788155"}]}"#,
     )
     .await;
 
     let sent = stub
         .client()
         .verify()
-        .lookup("09121234567", "verify-login", "48391")
+        .lookup("09177788155", "verify-login", "48391")
         .await
         .unwrap();
 
@@ -228,7 +229,7 @@ async fn blocking_posts_to_the_line_scoped_path() {
     let stub = Stub::start(
         "200 OK",
         r#"{"return":{"status":200,"message":"تایید شد"},
-            "entries":[{"linenumber":"10004346","receptor":"09121234567","status":"Active"},
+            "entries":[{"linenumber":"10004346","receptor":"09177788155","status":"Active"},
                        {"linenumber":"10004346","receptor":"09131234567","status":"AlreadyExists"}]}"#,
     )
     .await;
@@ -236,7 +237,7 @@ async fn blocking_posts_to_the_line_scoped_path() {
     let results = stub
         .client()
         .line()
-        .block("10004346", ["09121234567", "09131234567"])
+        .block("10004346", ["09177788155", "09131234567"])
         .await
         .unwrap();
 

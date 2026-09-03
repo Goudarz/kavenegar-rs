@@ -4,9 +4,10 @@
 //! The template must already exist and be approved in your Kavenegar panel.
 //!
 //! ```text
-//! KAVENEGAR_API_KEY=... cargo run --example send_otp -- 09121234567 verify-login
+//! KAVENEGAR_API_KEY=... cargo run --example send_otp -- 09177788155 verify-login
 //! ```
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use std::time::Duration;
 
 use kavenegar::{ApiStatus, Error, Kavenegar};

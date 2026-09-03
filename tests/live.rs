@@ -21,6 +21,7 @@
 //! A test whose environment variable is missing skips itself with a printed
 //! note rather than failing, so a partial setup still tells you something.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use kavenegar::{ApiStatus, Error, Kavenegar};
 
 /// Builds a client, or returns `None` so the caller can skip.

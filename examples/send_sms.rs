@@ -1,9 +1,10 @@
 //! Sends a single SMS and reports what happened.
 //!
 //! ```text
-//! KAVENEGAR_API_KEY=... cargo run --example send_sms -- 09121234567 "سلام"
+//! KAVENEGAR_API_KEY=... cargo run --example send_sms -- 09177788155 "سلام"
 //! ```
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use kavenegar::{ApiStatus, Error, Kavenegar};
 
 #[tokio::main]

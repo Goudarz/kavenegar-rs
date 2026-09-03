@@ -6,6 +6,7 @@
 //! KAVENEGAR_API_KEY=... cargo run --example diagnose
 //! ```
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use kavenegar::{ApiStatus, Error, Kavenegar};
 
 #[tokio::main]
