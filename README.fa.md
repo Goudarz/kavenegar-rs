@@ -8,14 +8,14 @@
 [![license](https://img.shields.io/crates/l/kavenegar.svg)](LICENSE)
 
 کتابخانه‌ی غیرهمزمان (async) زبان **Rust** برای وب‌سرویس پیامکی
-[کاوه‌نگار](https://kavenegar.com).
+[کاوه‌نگار](https://iff.gg/4GQhL9).
 
 **[English guide →](README.md)**
 
-- هر ۳۲ متد [مستندات REST](https://kavenegar.com/rest.html) پوشش داده شده
-- کدهای وضعیت به‌صورت type-safe، بدون اینکه کد جدید کاوه‌نگار برنامه‌تان را بشکند
+- همهٔ ۳۲ متد [مستندات REST](https://kavenegar.com/rest.html) پوشش داده شده
+- کدهای وضعیت به‌صورت type-safe، بدون اینکه کدهای مربوط به کاوه‌نگار برنامه‌تان را بشکند
 - خطاهای رایج پیش از مصرف درخواست گرفته می‌شوند
-- بدون وابستگی اضافه — TLS پیش‌فرض `rustls` است و به OpenSSL سیستم نیاز ندارد
+- بدون وابستگی اضافه، TLS پیش‌فرض `rustls` است و به OpenSSL سیستم نیاز ندارد
 
 ## فهرست
 
@@ -26,7 +26,7 @@
   - [ارسال پیامک](#ارسال-پیامک)
   - [کد یکبار مصرف (OTP)](#کد-یکبار-مصرف-otp)
   - [بررسی وضعیت تحویل](#بررسی-وضعیت-تحویل)
-  - [تماس صوتی](#تماس-صوتی)
+  - [تماس صوتی (TTS)](#تماس-صوتی-tts)
   - [اعتبار حساب](#اعتبار-حساب)
   - [دریافت پیامک](#دریافت-پیامک)
   - [لیست سیاه](#لیست-سیاه)
@@ -67,8 +67,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 ## گرفتن کلید API
 
-در [kavenegar.com](https://kavenegar.com) ثبت‌نام کنید، سپس کلید را از پنل،
-بخش **تنظیمات › کلید وب‌سرویس** بردارید.
+در [kavenegar.com](https://iff.gg/4GQhL9) نام‌نویسی کنید، همچنین می‌توانید از بخش تنظیمات » تنظیمات امنیتی، به **API KEY** حساب کاربری خود دسترسی داشته باشید.
 
 کلید را داخل سورس‌کد ننویسید. از متغیر محیطی بخوانید:
 
@@ -91,7 +90,7 @@ use kavenegar::Kavenegar;
 async fn main() -> Result<(), kavenegar::Error> {
     let client = Kavenegar::new(std::env::var("KAVENEGAR_API_KEY").unwrap());
 
-    let sent = client.sms().send(["09121234567"], "سلام دنیا").await?;
+    let sent = client.sms().send(["09177788155"], "سلام دنیا").await?;
     println!("شناسه پیام: {}", sent[0].message_id);
 
     Ok(())
@@ -100,14 +99,14 @@ async fn main() -> Result<(), kavenegar::Error> {
 
 <div dir="rtl">
 
-کلاینت را یک بار بسازید و همه‌جا استفاده کنید. کپی‌کردنش ارزان است و کپی‌ها از
-یک connection pool مشترک استفاده می‌کنند — پس آن را در state برنامه نگه دارید،
+کلاینت را یک بار بسازید و همه‌جا استفاده کنید. هر جایی خواستید کپی‌ش کنید و کپی‌ها از
+یک connection pool مشترک استفاده می‌کنند، پس آن را در state برنامه نگه دارید،
 نه اینکه برای هر درخواست یکی بسازید.
 
 ## راهنمای استفاده
 
 متدهایی که پارامتر اختیاری دارند یک builder برمی‌گردانند. هرچه لازم دارید تنظیم
-کنید و بعد خودِ builder را `await` کنید — متد جداگانه‌ای برای ارسال لازم نیست.
+کنید و بعد خود builder را `await` کنید؛ متد جداگانه‌ای برای ارسال لازم نیست.
 
 ### ارسال پیامک
 
@@ -115,14 +114,14 @@ async fn main() -> Result<(), kavenegar::Error> {
 
 ```rust
 // ساده
-let sent = client.sms().send(["09121234567"], "سلام").await?;
+let sent = client.sms().send(["09177788155"], "سلام").await?;
 
 // با تنظیمات بیشتر
 use kavenegar::MessageType;
 
 let sent = client
     .sms()
-    .send(["09121234567", "09131234567"], "کد شما: ۱۲۳۴")
+    .send(["09177788155", "09111234567"], "کد شما: ۱۲۳۴")
     .sender("10004346")               // خط اختصاصی
     .message_type(MessageType::Flash) // نمایش فوری روی صفحه
     .tag("signup")                    // برای دسته‌بندی در گزارش‌ها
@@ -132,7 +131,7 @@ let sent = client
 let sent = client
     .sms()
     .send_array(
-        ["09121234567", "09131234567"],
+        ["09177788155", "09131234567"],
         ["پیام اول", "پیام دوم"],
     )
     .await?;
@@ -143,7 +142,7 @@ let sent = client
 ### کد یکبار مصرف (OTP)
 
 برای کد ورود، به‌جای پیامک معمولی از این استفاده کنید. الگویی را که در پنل ثبت
-کرده‌اید می‌فرستد، به خط اختصاصی نیاز ندارد، و به کاربرانی که تبلیغات را مسدود
+کرده‌اید می‌فرستد، به خط اختصاصی نیاز ندارد و به کاربرانی که تبلیغات را مسدود
 کرده‌اند هم می‌رسد.
 
 </div>
@@ -151,7 +150,7 @@ let sent = client
 ```rust
 let sent = client
     .verify()
-    .lookup("09121234567", "verify-login", "48391")
+    .lookup("09177788155", "verify-login", "48391")
     .await?;
 ```
 
@@ -174,9 +173,9 @@ let sent = client
 ```rust
 let sent = client
     .verify()
-    .lookup("09121234567", "order-shipped", "48391")
-    .token2("تهران")
-    .token10("علی رضایی")   // token10 و token20 فاصله را قبول می‌کنند
+    .lookup("09177788155", "order-shipped", "48391")
+    .token2("شیراز")
+    .token10("گودرز جعفری")   // token10 و token20 فاصله را قبول می‌کنند
     .await?;
 ```
 
@@ -191,7 +190,7 @@ use kavenegar::VerifyChannel;
 
 let sent = client
     .verify()
-    .lookup("09121234567", "verify-login", "48391")
+    .lookup("09177788155", "verify-login", "48391")
     .channel(VerifyChannel::Call)
     .await?;
 ```
@@ -223,14 +222,14 @@ for m in statuses {
 
 <div dir="rtl">
 
-### تماس صوتی
+### تماس صوتی (TTS)
 
 </div>
 
 ```rust
 let calls = client
     .call()
-    .text_to_speech(["09121234567"], "سفارش شما ارسال شد")
+    .text_to_speech(["09177788155"], "سفارش شما ارسال شد")
     .repeat(2)   // تکرار پیام در طول تماس
     .await?;
 ```
@@ -266,17 +265,17 @@ let page = client.sms().inbox_paged("3000202030").unread().await?;
 ### لیست سیاه
 
 کسانی که با کلمه‌ی لغو پاسخ می‌دهند، روی همان خطی که به آن پاسخ داده‌اند مسدود
-می‌شوند — به همین دلیل همه‌ی این متدها اول شماره‌ی خط را می‌گیرند.
+می‌شوند، به همین دلیل همه‌ی این متدها اول شماره‌ی خط را می‌گیرند.
 
 </div>
 
 ```rust
 let page = client.line().blocked("10004346").await?;
 
-let results = client.line().block("10004346", ["09121234567"]).await?;
-let results = client.line().unblock("10004346", ["09121234567"]).await?;
+let results = client.line().block("10004346", ["09177788155"]).await?;
+let results = client.line().unblock("10004346", ["09177788155"]).await?;
 
-let results = client.line().is_blocked("10004346", ["09121234567"]).await?;
+let results = client.line().is_blocked("10004346", ["09177788155"]).await?;
 if results[0].status.is_blocked() {
     println!("به این شماره پیامک نفرستید");
 }
@@ -341,7 +340,7 @@ let page = client
 
 ## مدیریت خطاها
 
-کاوه‌نگار بیشتر خطاها را با **HTTP 200** و یک کد وضعیت داخل بدنه گزارش می‌کند —
+کاوه‌نگار بیشتر خطاها را با **HTTP 200** و یک کد وضعیت داخل بدنه گزارش می‌کند،
 پس روی `Error::Api` تطبیق بدهید، نه روی وضعیت HTTP.
 
 </div>
@@ -349,7 +348,7 @@ let page = client
 ```rust
 use kavenegar::{ApiStatus, Error};
 
-match client.sms().send(["09121234567"], "سلام").await {
+match client.sms().send(["09177788155"], "سلام").await {
     Ok(sent) => println!("شناسه: {}", sent[0].message_id),
 
     Err(Error::Api(e)) if e.status() == ApiStatus::InsufficientCredit => {
@@ -367,8 +366,8 @@ match client.sms().send(["09121234567"], "سلام").await {
 
 <div dir="rtl">
 
-هر کد مستندشده یک variant با نام مشخص دارد. کدهایی که کاوه‌نگار بعداً اضافه کند
-به‌صورت `ApiStatus::Other(i32)` می‌آیند و باعث خطای parse نمی‌شوند — یعنی
+هر کد مستند شده یک variant با نام مشخص دارد. کدهایی که کاوه‌نگار بعداً اضافه کند
+به‌صورت `ApiStatus::Other(i32)` می‌آیند و باعث خطای parse نمی‌شوند، یعنی
 برنامه‌ی شما با تغییرات سمت سرور نمی‌شکند.
 
 `is_retryable()` فقط برای خطاهای واقعاً موقتی `true` است: سرور شلوغ، محدودیت
@@ -488,7 +487,7 @@ cargo test
 <div dir="rtl">
 
 **تست‌های واقعی** با API اصلی کار می‌کنند و `#[ignore]` هستند تا تصادفاً اجرا
-نشوند. تست‌های `readonly` هیچ هزینه‌ای ندارند — از همان‌ها شروع کنید:
+نشوند. تست‌های `readonly` هیچ هزینه‌ای ندارند، از همان‌ها شروع کنید:
 
 </div>
 
@@ -499,7 +498,7 @@ cargo test --test live -- --ignored readonly --nocapture
 
 <div dir="rtl">
 
-این‌ها ساعت سرور، اعتبار حساب، لیست الگوها، و درست گزارش‌شدن کلید نامعتبر را
+این‌ها ساعت سرور، اعتبار حساب، لیست الگوها و درست گزارش‌شدن کلید نامعتبر را
 بررسی می‌کنند.
 
 تست‌های ارسال، پیام واقعی می‌فرستند و **اعتبار مصرف می‌کنند**:
@@ -507,7 +506,7 @@ cargo test --test live -- --ignored readonly --nocapture
 </div>
 
 ```bash
-export KAVENEGAR_TEST_RECEPTOR=09121234567
+export KAVENEGAR_TEST_RECEPTOR=09177788155
 export KAVENEGAR_TEST_SENDER=10004346        # اختیاری
 export KAVENEGAR_TEST_TEMPLATE=verify-login  # اختیاری
 cargo test --test live -- --ignored sending --nocapture --test-threads=1
@@ -523,8 +522,8 @@ cargo test --test live -- --ignored sending --nocapture --test-threads=1
 </div>
 
 ```bash
-cargo run --example send_sms -- 09121234567 "سلام"
-cargo run --example send_otp -- 09121234567 verify-login
+cargo run --example send_sms -- 09177788155 "سلام"
+cargo run --example send_otp -- 09177788155 verify-login
 ```
 
 <div dir="rtl">
@@ -545,22 +544,25 @@ cargo doc --all-features --no-deps
 ## نکته‌های مهم
 
 - **تاریخ‌ها** به فرمت Unix time (ثانیه) هستند، دقیقاً همان‌طور که API می‌فرستد.
-  اگر نوع تقویمی می‌خواهید با `chrono` یا `jiff` تبدیل کنید؛ این کتابخانه هیچ
+  اگر نوع تقویمی می‌خواهید با `chrono` یا `jiff` یا هر مورد دیگری تبدیل کنید؛ این کتابخانه هیچ
   وابستگی تاریخ اضافه نمی‌کند. `client.utils().server_time()` ساعت خود
   کاوه‌نگار را می‌خواند.
 - **هزینه‌ها** به ریال هستند.
-- **`sms().receive()` پیام‌ها را مصرف می‌کند** — بار دوم همان پیام‌ها برنمی‌گردند.
+- **`sms().receive()` پیام‌ها را مصرف می‌کند**، بار دوم همان پیام‌ها برنمی‌گردند.
   اگر می‌خواهید بدون مصرف بخوانید از `sms().inbox_paged()` استفاده کنید.
 - **`select`، `select_outbox` و `latest_outbox`** به تنظیم IP در بخش امنیتی پنل
   نیاز دارند، وگرنه خطای `ApiStatus::AccessDenied` می‌دهند.
 - **حساب‌های آزمایشی** فقط به شماره‌ی صاحب حساب می‌توانند پیامک بفرستند.
+- **حساب جدید باید احراز هویت شود.** تا وقتی احراز هویت کامل نشود، همه‌ی متدها
+  خطای `ApiStatus::AccountNotVerified` (کد ۴۳۰) می‌دهند، حتی متدهای رایگانی
+  مثل `server_time`.
 - **توکن نباید فاصله داشته باشد.** کاوه‌نگار روی فاصله جدا می‌کند و پیام بی‌صدا
   ناقص می‌شود، برای همین این کتابخانه از قبل جلویش را می‌گیرد. برای مقادیر
   دارای فاصله از `token10` یا `token20` استفاده کنید.
 
 ## لایسنس
 
-[MIT](LICENSE).
+این پروژه تحت [لیسانس MIT](LICENSE) منتشر شده است.
 
 این یک کتابخانه‌ی غیررسمی و متن‌باز است و وابستگی رسمی به کاوه‌نگار ندارد.
 

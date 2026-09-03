@@ -5,7 +5,7 @@
 [![CI](https://github.com/goudarz/kavenegar-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/goudarz/kavenegar-rs/actions/workflows/ci.yml)
 [![license](https://img.shields.io/crates/l/kavenegar.svg)](LICENSE)
 
-An async Rust client for the [Kavenegar](https://kavenegar.com) SMS, OTP and
+An async Rust client for the [Kavenegar](https://iff.gg/4GQhL9) SMS, OTP and
 voice-call API.
 
 **[راهنمای فارسی →](README.fa.md)**
@@ -24,7 +24,7 @@ voice-call API.
   - [Sending an SMS](#sending-an-sms)
   - [One-time passwords](#one-time-passwords)
   - [Checking delivery](#checking-delivery)
-  - [Voice calls](#voice-calls)
+  - [Voice calls (TTS)](#voice-calls-tts)
   - [Account credit](#account-credit)
   - [Receiving messages](#receiving-messages)
   - [Blocked recipients](#blocked-recipients)
@@ -57,8 +57,8 @@ Needs Rust 1.88 or newer.
 
 ## Get an API key
 
-Sign up at [kavenegar.com](https://kavenegar.com), then copy your key from the
-panel under **تنظیمات › کلید وب‌سرویس**.
+Sign up at [kavenegar.com](https://iff.gg/4GQhL9). You can then find your
+account's **API KEY** in the panel under **Settings › Security Settings**.
 
 Keep it out of your source code. Read it from the environment instead:
 
@@ -75,16 +75,16 @@ use kavenegar::Kavenegar;
 async fn main() -> Result<(), kavenegar::Error> {
     let client = Kavenegar::new(std::env::var("KAVENEGAR_API_KEY").unwrap());
 
-    let sent = client.sms().send(["09121234567"], "Hello!").await?;
+    let sent = client.sms().send(["09177788155"], "Hello!").await?;
     println!("queued as {}", sent[0].message_id);
 
     Ok(())
 }
 ```
 
-Build the client once and share it. Cloning is cheap and clones reuse the same
-connection pool, so put it in your application state rather than making a new
-one per request.
+Build the client once and use it everywhere. Copy it wherever you like — the
+copies share one connection pool, so keep it in your application state rather
+than making a new one per request.
 
 ## Usage
 
@@ -95,14 +95,14 @@ Calls with optional parameters return a builder. Set what you need, then
 
 ```rust
 // Simple.
-let sent = client.sms().send(["09121234567"], "Hello!").await?;
+let sent = client.sms().send(["09177788155"], "Hello!").await?;
 
 // With options.
 use kavenegar::MessageType;
 
 let sent = client
     .sms()
-    .send(["09121234567", "09131234567"], "Your code: 1234")
+    .send(["09177788155", "09111234567"], "Your code: 1234")
     .sender("10004346")          // a specific line
     .message_type(MessageType::Flash)
     .tag("signup")               // groups it in your reports
@@ -112,7 +112,7 @@ let sent = client
 let sent = client
     .sms()
     .send_array(
-        ["09121234567", "09131234567"],
+        ["09177788155", "09131234567"],
         ["First message", "Second message"],
     )
     .await?;
@@ -127,7 +127,7 @@ have opted out of bulk messaging.
 ```rust
 let sent = client
     .verify()
-    .lookup("09121234567", "verify-login", "48391")
+    .lookup("09177788155", "verify-login", "48391")
     .await?;
 ```
 
@@ -142,9 +142,9 @@ A template can take up to five substitutions:
 ```rust
 let sent = client
     .verify()
-    .lookup("09121234567", "order-shipped", "48391")
-    .token2("Tehran")
-    .token10("Ali Rezaei")     // token10 and token20 allow spaces
+    .lookup("09177788155", "order-shipped", "48391")
+    .token2("Shiraz")
+    .token10("Goudarz Jafari")     // token10 and token20 allow spaces
     .await?;
 ```
 
@@ -155,7 +155,7 @@ use kavenegar::VerifyChannel;
 
 let sent = client
     .verify()
-    .lookup("09121234567", "verify-login", "48391")
+    .lookup("09177788155", "verify-login", "48391")
     .channel(VerifyChannel::Call)
     .await?;
 ```
@@ -181,13 +181,13 @@ for m in statuses {
 }
 ```
 
-### Voice calls
+### Voice calls (TTS)
 
 ```rust
 let calls = client
     .call()
-    .text_to_speech(["09121234567"], "Your order has shipped")
-    .repeat(2)
+    .text_to_speech(["09177788155"], "Your order has shipped")
+    .repeat(2)   // repeats the message during the call
     .await?;
 ```
 
@@ -216,10 +216,10 @@ so every method here takes the line number first.
 ```rust
 let page = client.line().blocked("10004346").await?;
 
-let results = client.line().block("10004346", ["09121234567"]).await?;
-let results = client.line().unblock("10004346", ["09121234567"]).await?;
+let results = client.line().block("10004346", ["09177788155"]).await?;
+let results = client.line().unblock("10004346", ["09177788155"]).await?;
 
-let results = client.line().is_blocked("10004346", ["09121234567"]).await?;
+let results = client.line().is_blocked("10004346", ["09177788155"]).await?;
 if results[0].status.is_blocked() {
     println!("do not send to this number");
 }
@@ -276,7 +276,7 @@ match on `Error::Api` rather than the HTTP status.
 ```rust
 use kavenegar::{ApiStatus, Error};
 
-match client.sms().send(["09121234567"], "Hello").await {
+match client.sms().send(["09177788155"], "Hello").await {
     Ok(sent) => println!("queued as {}", sent[0].message_id),
 
     Err(Error::Api(e)) if e.status() == ApiStatus::InsufficientCredit => {
@@ -405,7 +405,7 @@ is reported properly.
 The sending tests deliver real messages and **spend credit**:
 
 ```bash
-export KAVENEGAR_TEST_RECEPTOR=09121234567
+export KAVENEGAR_TEST_RECEPTOR=09177788155
 export KAVENEGAR_TEST_SENDER=10004346        # optional
 export KAVENEGAR_TEST_TEMPLATE=verify-login  # optional
 cargo test --test live -- --ignored sending --nocapture --test-threads=1
@@ -416,8 +416,8 @@ A test whose variable is missing skips itself with a note rather than failing.
 **The examples** are the quickest manual check:
 
 ```bash
-cargo run --example send_sms -- 09121234567 "Hello"
-cargo run --example send_otp -- 09121234567 verify-login
+cargo run --example send_sms -- 09177788155 "Hello"
+cargo run --example send_otp -- 09177788155 verify-login
 ```
 
 **Everything CI runs**, if you want it locally:
@@ -432,8 +432,8 @@ cargo doc --all-features --no-deps
 ## Things worth knowing
 
 - **Timestamps** are Unix seconds, exactly as the API sends them. Convert with
-  `chrono` or `jiff` if you want calendar types; this crate adds no date
-  dependency. `client.utils().server_time()` reads Kavenegar's own clock.
+  `chrono`, `jiff`, or anything else if you want calendar types; this crate
+  adds no date dependency. `client.utils().server_time()` reads Kavenegar's own clock.
 - **Costs** are in Rials.
 - **`sms().receive()` consumes messages** — a second call will not return the
   same ones. Use `sms().inbox_paged()` if you would rather read without
@@ -441,13 +441,16 @@ cargo doc --all-features --no-deps
 - **`select`, `select_outbox` and `latest_outbox`** need an IP allowlist entry
   in your panel, or they fail with `ApiStatus::AccessDenied`.
 - **Trial accounts** can only send to their own owner's number.
+- **A new account must finish identity verification** (احراز هویت) in the
+  panel. Until it does, every endpoint returns `ApiStatus::AccountNotVerified`,
+  including free ones like `server_time`.
 - **Tokens must not contain spaces.** Kavenegar splits on whitespace and would
   silently truncate the message, so this crate rejects it up front. Use
   `token10` or `token20` for values with spaces.
 
 ## License
 
-[MIT](LICENSE).
+This project is released under the [MIT License](LICENSE).
 
-This is an unofficial, community-maintained client and is not affiliated with
+This is an unofficial, open-source client and has no official affiliation with
 Kavenegar.
