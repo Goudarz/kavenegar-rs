@@ -384,6 +384,24 @@ particular reason to trim, keep the default.
 
 ## Testing
 
+**Check your account** before anything else. This is read-only and free:
+
+```bash
+export KAVENEGAR_API_KEY=your-key
+cargo run --example diagnose
+```
+
+It probes the clock, credit, templates, outbox and media library, then tells
+you in plain terms what works and what to fix:
+
+```text
+server clock          ... ok — 03/09/2026 11:42:17 ق.ظ (unix 1788500537)
+account info          ... ok — 250000 Rials, type `master`, expires 1798500537
+verify templates      ... ok — 2 registered
+recent outbox         ... skipped — needs an IP allowlist entry (407)
+media library         ... ok — 0 file(s)
+```
+
 **Offline tests** need no key and no network. They run a stub HTTP server
 in-process:
 

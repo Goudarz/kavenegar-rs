@@ -475,6 +475,32 @@ kavenegar = { version = "0.1", default-features = false, features = ["full", "na
 
 ## تست کردن
 
+**اول وضعیت حساب را بررسی کنید.** این فقط خواندنی است و هزینه‌ای ندارد:
+
+</div>
+
+```bash
+export KAVENEGAR_API_KEY=کلید-شما
+cargo run --example diagnose
+```
+
+<div dir="rtl">
+
+ساعت سرور، اعتبار، الگوها، لیست ارسال‌ها و رسانه‌ها را بررسی می‌کند و خیلی ساده
+می‌گوید چه چیزی کار می‌کند و چه چیزی را باید درست کنید:
+
+</div>
+
+```text
+server clock          ... ok — 03/09/2026 11:42:17 ق.ظ (unix 1788500537)
+account info          ... ok — 250000 Rials, type `master`, expires 1798500537
+verify templates      ... ok — 2 registered
+recent outbox         ... skipped — needs an IP allowlist entry (407)
+media library         ... ok — 0 file(s)
+```
+
+<div dir="rtl">
+
 **تست‌های آفلاین** به کلید و اینترنت نیاز ندارند. یک سرور HTTP آزمایشی داخل خود
 پروسه اجرا می‌کنند:
 
