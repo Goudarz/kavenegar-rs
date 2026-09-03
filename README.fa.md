@@ -1,0 +1,567 @@
+<div dir="rtl">
+
+# kavenegar
+
+[![crates.io](https://img.shields.io/crates/v/kavenegar.svg)](https://crates.io/crates/kavenegar)
+[![docs.rs](https://docs.rs/kavenegar/badge.svg)](https://docs.rs/kavenegar)
+[![CI](https://github.com/goudarz/kavenegar-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/goudarz/kavenegar-rs/actions/workflows/ci.yml)
+[![license](https://img.shields.io/crates/l/kavenegar.svg)](LICENSE)
+
+کتابخانه‌ی غیرهمزمان (async) زبان **Rust** برای وب‌سرویس پیامکی
+[کاوه‌نگار](https://kavenegar.com).
+
+**[English guide →](README.md)**
+
+- هر ۳۲ متد [مستندات REST](https://kavenegar.com/rest.html) پوشش داده شده
+- کدهای وضعیت به‌صورت type-safe، بدون اینکه کد جدید کاوه‌نگار برنامه‌تان را بشکند
+- خطاهای رایج پیش از مصرف درخواست گرفته می‌شوند
+- بدون وابستگی اضافه — TLS پیش‌فرض `rustls` است و به OpenSSL سیستم نیاز ندارد
+
+## فهرست
+
+- [نصب](#نصب)
+- [گرفتن کلید API](#گرفتن-کلید-api)
+- [شروع سریع](#شروع-سریع)
+- [راهنمای استفاده](#راهنمای-استفاده)
+  - [ارسال پیامک](#ارسال-پیامک)
+  - [کد یکبار مصرف (OTP)](#کد-یکبار-مصرف-otp)
+  - [بررسی وضعیت تحویل](#بررسی-وضعیت-تحویل)
+  - [تماس صوتی](#تماس-صوتی)
+  - [اعتبار حساب](#اعتبار-حساب)
+  - [دریافت پیامک](#دریافت-پیامک)
+  - [لیست سیاه](#لیست-سیاه)
+  - [مدیریت رسانه](#مدیریت-رسانه)
+  - [مدیریت الگوها](#مدیریت-الگوها)
+- [مدیریت خطاها](#مدیریت-خطاها)
+- [صفحه‌بندی](#صفحه‌بندی)
+- [همه‌ی متدها](#همهی-متدها)
+- [Feature flags](#feature-flags)
+- [تست کردن](#تست-کردن)
+- [نکته‌های مهم](#نکتههای-مهم)
+- [لایسنس](#لایسنس)
+
+## نصب
+
+</div>
+
+```bash
+cargo add kavenegar
+cargo add tokio --features macros,rt-multi-thread
+```
+
+<div dir="rtl">
+
+یا دستی در `Cargo.toml`:
+
+</div>
+
+```toml
+[dependencies]
+kavenegar = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+<div dir="rtl">
+
+به Rust نسخه‌ی ۱.۸۸ یا بالاتر نیاز دارد.
+
+## گرفتن کلید API
+
+در [kavenegar.com](https://kavenegar.com) ثبت‌نام کنید، سپس کلید را از پنل،
+بخش **تنظیمات › کلید وب‌سرویس** بردارید.
+
+کلید را داخل سورس‌کد ننویسید. از متغیر محیطی بخوانید:
+
+</div>
+
+```bash
+export KAVENEGAR_API_KEY=کلید-شما
+```
+
+<div dir="rtl">
+
+## شروع سریع
+
+</div>
+
+```rust
+use kavenegar::Kavenegar;
+
+#[tokio::main]
+async fn main() -> Result<(), kavenegar::Error> {
+    let client = Kavenegar::new(std::env::var("KAVENEGAR_API_KEY").unwrap());
+
+    let sent = client.sms().send(["09121234567"], "سلام دنیا").await?;
+    println!("شناسه پیام: {}", sent[0].message_id);
+
+    Ok(())
+}
+```
+
+<div dir="rtl">
+
+کلاینت را یک بار بسازید و همه‌جا استفاده کنید. کپی‌کردنش ارزان است و کپی‌ها از
+یک connection pool مشترک استفاده می‌کنند — پس آن را در state برنامه نگه دارید،
+نه اینکه برای هر درخواست یکی بسازید.
+
+## راهنمای استفاده
+
+متدهایی که پارامتر اختیاری دارند یک builder برمی‌گردانند. هرچه لازم دارید تنظیم
+کنید و بعد خودِ builder را `await` کنید — متد جداگانه‌ای برای ارسال لازم نیست.
+
+### ارسال پیامک
+
+</div>
+
+```rust
+// ساده
+let sent = client.sms().send(["09121234567"], "سلام").await?;
+
+// با تنظیمات بیشتر
+use kavenegar::MessageType;
+
+let sent = client
+    .sms()
+    .send(["09121234567", "09131234567"], "کد شما: ۱۲۳۴")
+    .sender("10004346")               // خط اختصاصی
+    .message_type(MessageType::Flash) // نمایش فوری روی صفحه
+    .tag("signup")                    // برای دسته‌بندی در گزارش‌ها
+    .await?;
+
+// پیام متفاوت برای هر گیرنده، در یک درخواست
+let sent = client
+    .sms()
+    .send_array(
+        ["09121234567", "09131234567"],
+        ["پیام اول", "پیام دوم"],
+    )
+    .await?;
+```
+
+<div dir="rtl">
+
+### کد یکبار مصرف (OTP)
+
+برای کد ورود، به‌جای پیامک معمولی از این استفاده کنید. الگویی را که در پنل ثبت
+کرده‌اید می‌فرستد، به خط اختصاصی نیاز ندارد، و به کاربرانی که تبلیغات را مسدود
+کرده‌اند هم می‌رسد.
+
+</div>
+
+```rust
+let sent = client
+    .verify()
+    .lookup("09121234567", "verify-login", "48391")
+    .await?;
+```
+
+<div dir="rtl">
+
+متن پیام داخل الگو است و شما فقط توکن را می‌فرستید:
+
+</div>
+
+```text
+کد ورود شما %token است
+```
+
+<div dir="rtl">
+
+هر الگو می‌تواند تا پنج جایگزین داشته باشد:
+
+</div>
+
+```rust
+let sent = client
+    .verify()
+    .lookup("09121234567", "order-shipped", "48391")
+    .token2("تهران")
+    .token10("علی رضایی")   // token10 و token20 فاصله را قبول می‌کنند
+    .await?;
+```
+
+<div dir="rtl">
+
+برای اینکه کد با تماس صوتی خوانده شود:
+
+</div>
+
+```rust
+use kavenegar::VerifyChannel;
+
+let sent = client
+    .verify()
+    .lookup("09121234567", "verify-login", "48391")
+    .channel(VerifyChannel::Call)
+    .await?;
+```
+
+<div dir="rtl">
+
+### بررسی وضعیت تحویل
+
+ارسال غیرهمزمان است، پس وضعیت بلافاصله بعد از ارسال «در صف» است. با شناسه‌ی پیام
+دوباره سراغش بروید:
+
+</div>
+
+```rust
+let statuses = client.sms().status([sent.message_id]).await?;
+
+for m in statuses {
+    println!("{}: {}", m.receptor, m.status);
+
+    if m.status.is_delivered() {
+        println!("  رسید");
+    } else if m.status.is_final_failure() {
+        println!("  قطعاً شکست خورد، دیگر بررسی نکنید");
+    } else if m.status.is_pending() {
+        println!("  هنوز در راه است");
+    }
+}
+```
+
+<div dir="rtl">
+
+### تماس صوتی
+
+</div>
+
+```rust
+let calls = client
+    .call()
+    .text_to_speech(["09121234567"], "سفارش شما ارسال شد")
+    .repeat(2)   // تکرار پیام در طول تماس
+    .await?;
+```
+
+<div dir="rtl">
+
+### اعتبار حساب
+
+</div>
+
+```rust
+let info = client.account().info().await?;
+println!("{} ریال باقی‌مانده", info.remaining_credit);
+```
+
+<div dir="rtl">
+
+### دریافت پیامک
+
+</div>
+
+```rust
+// پیام‌های خوانده‌نشده را می‌گیرد و خوانده علامت می‌زند.
+// هر پیام فقط یک بار برمی‌گردد.
+let received = client.sms().receive("3000202030").await?;
+
+// بدون مصرف کردن می‌خواند؛ اگر برنامه وسط کار crash کند چیزی از دست نمی‌رود.
+let page = client.sms().inbox_paged("3000202030").unread().await?;
+```
+
+<div dir="rtl">
+
+### لیست سیاه
+
+کسانی که با کلمه‌ی لغو پاسخ می‌دهند، روی همان خطی که به آن پاسخ داده‌اند مسدود
+می‌شوند — به همین دلیل همه‌ی این متدها اول شماره‌ی خط را می‌گیرند.
+
+</div>
+
+```rust
+let page = client.line().blocked("10004346").await?;
+
+let results = client.line().block("10004346", ["09121234567"]).await?;
+let results = client.line().unblock("10004346", ["09121234567"]).await?;
+
+let results = client.line().is_blocked("10004346", ["09121234567"]).await?;
+if results[0].status.is_blocked() {
+    println!("به این شماره پیامک نفرستید");
+}
+```
+
+<div dir="rtl">
+
+### مدیریت رسانه
+
+برای خطوط پیام‌رسان. تصویر تا ۱۰ مگابایت، ویدیوی MP4 تا ۲۰ مگابایت و ۶۰ ثانیه.
+
+</div>
+
+```rust
+let bytes = tokio::fs::read("photo.jpg").await?;
+let media = client.media().upload("photo.jpg", bytes).await?;
+println!("شناسه رسانه: {}", media.id);
+
+let page = client.media().list().await?;
+let one = client.media().get(&media.id).await?;
+client.media().delete(&media.id).await?;
+```
+
+<div dir="rtl">
+
+### مدیریت الگوها
+
+الگوهای اعتبارسنجی را به‌جای پنل، از داخل کد مدیریت کنید.
+
+</div>
+
+```rust
+use kavenegar::{SendMethod, SourceType};
+
+let template = client
+    .verify()
+    .add_template("LoginOtp", SourceType::Website, SendMethod::Sms)
+    .text_message("کد ورود شما %token است")
+    .await?;
+
+let page = client.verify().templates().await?;
+let one = client.verify().template(template.id).await?;
+let copy = client.verify().clone_template("LoginOtpV2").from_id(template.id).await?;
+client.verify().delete_template(template.id).await?;
+```
+
+<div dir="rtl">
+
+نمایندگان فروش می‌توانند روی الگوهای کاربر زیرمجموعه هم کار کنند:
+
+</div>
+
+```rust
+let page = client
+    .verify()
+    .templates()
+    .sub_account_api_key("کلید-کاربر-زیرمجموعه")
+    .await?;
+```
+
+<div dir="rtl">
+
+## مدیریت خطاها
+
+کاوه‌نگار بیشتر خطاها را با **HTTP 200** و یک کد وضعیت داخل بدنه گزارش می‌کند —
+پس روی `Error::Api` تطبیق بدهید، نه روی وضعیت HTTP.
+
+</div>
+
+```rust
+use kavenegar::{ApiStatus, Error};
+
+match client.sms().send(["09121234567"], "سلام").await {
+    Ok(sent) => println!("شناسه: {}", sent[0].message_id),
+
+    Err(Error::Api(e)) if e.status() == ApiStatus::InsufficientCredit => {
+        eprintln!("اعتبار کافی نیست: {}", e.message());
+    }
+    Err(Error::Api(e)) if e.status() == ApiStatus::InvalidReceptor => {
+        eprintln!("شماره گیرنده نامعتبر است");
+    }
+    Err(e) if e.is_retryable() => {
+        eprintln!("مشکل موقتی، دوباره تلاش کنید: {e}");
+    }
+    Err(e) => return Err(e),
+}
+```
+
+<div dir="rtl">
+
+هر کد مستندشده یک variant با نام مشخص دارد. کدهایی که کاوه‌نگار بعداً اضافه کند
+به‌صورت `ApiStatus::Other(i32)` می‌آیند و باعث خطای parse نمی‌شوند — یعنی
+برنامه‌ی شما با تغییرات سمت سرور نمی‌شکند.
+
+`is_retryable()` فقط برای خطاهای واقعاً موقتی `true` است: سرور شلوغ، محدودیت
+نرخ، یا timeout شبکه. برای کلید نامعتبر یا اعتبار تمام‌شده هرگز `true` نیست،
+چون تکرار درخواست فقط همان خطا را دوباره می‌دهد.
+
+بعضی اشتباه‌ها اصلاً به سرور نمی‌رسند و هزینه‌ای برایتان ندارند:
+
+</div>
+
+```rust
+// دو گیرنده ولی یک پیام
+let err = client.sms().send_array(["0912...", "0913..."], ["فقط یکی"]).await;
+// -> InvalidParameter { parameter: "messages", .. }
+```
+
+<div dir="rtl">
+
+## صفحه‌بندی
+
+متدهای لیستی یک `Page<T>` برمی‌گردانند که مثل یک slice رفتار می‌کند و
+شمارنده‌های لازم برای رفتن به صفحه‌ی بعد را هم دارد:
+
+</div>
+
+```rust
+let mut page = client.verify().templates().await?;
+
+loop {
+    for template in &page {
+        println!("{}", template.name);
+    }
+
+    let Some(next) = page.next_page() else { break };
+    page = client.verify().templates().page(next as u32).await?;
+}
+```
+
+<div dir="rtl">
+
+## همه‌ی متدها
+
+| سرویس | متدها |
+| --- | --- |
+| `sms()` | `send`، `send_array`، `status`، `status_by_local_id`، `status_by_receptor`، `select`، `select_outbox`، `latest_outbox`، `count_outbox`، `cancel`، `receive`، `inbox_paged`، `count_inbox` |
+| `verify()` | `lookup`، `templates`، `template`، `add_template`، `update_template`، `clone_template`، `delete_template` |
+| `call()` | `text_to_speech` |
+| `account()` | `info`، `config`، `update_config` |
+| `line()` | `blocked`، `block`، `unblock`، `is_blocked` |
+| `media()` | `upload`، `list`، `get`، `delete` |
+| `utils()` | `server_time` |
+
+## Feature flags
+
+به‌صورت پیش‌فرض همه‌چیز فعال است، پس `kavenegar = "0.1"` بدون تنظیم اضافه کار
+می‌کند.
+
+اگر می‌خواهید فقط بخشی که استفاده می‌کنید کامپایل شود، پیش‌فرض‌ها را خاموش کنید
+و سرویس‌های موردنظر را نام ببرید. **حتماً یک TLS هم در لیست بگذارید**، وگرنه
+هیچ اتصالی برقرار نمی‌شود:
+
+</div>
+
+```toml
+kavenegar = { version = "0.1", default-features = false, features = ["sms", "verify", "rustls-tls"] }
+```
+
+<div dir="rtl">
+
+| Feature | پیش‌فرض | چه چیزی را فعال می‌کند |
+| --- | --- | --- |
+| `full` | ✅ | همه‌ی سرویس‌های زیر |
+| `sms` | ✅ | `client.sms()` |
+| `verify` | ✅ | `client.verify()` |
+| `call` | ✅ | `client.call()` |
+| `account` | ✅ | `client.account()` |
+| `line` | ✅ | `client.line()` |
+| `media` | ✅ | `client.media()` — وابستگی `multipart` را اضافه می‌کند |
+| `utils` | ✅ | `client.utils()` |
+| `rustls-tls` | ✅ | TLS با `rustls`، بدون نیاز به OpenSSL سیستم |
+| `native-tls` | ❌ | TLS با کتابخانه‌ی خود سیستم‌عامل |
+
+چند ترکیب آماده:
+
+</div>
+
+```toml
+# فقط OTP — کوچک‌ترین بیلد مفید
+kavenegar = { version = "0.1", default-features = false, features = ["verify", "rustls-tls"] }
+
+# همه‌چیز به‌جز رسانه، که وابستگی multipart را حذف می‌کند
+kavenegar = { version = "0.1", default-features = false, features = [
+    "sms", "verify", "call", "account", "line", "utils", "rustls-tls",
+] }
+
+# کامل، ولی روی TLS سیستم به‌جای rustls
+kavenegar = { version = "0.1", default-features = false, features = ["full", "native-tls"] }
+```
+
+<div dir="rtl">
+
+صادقانه: تنها گزینه‌ای که واقعاً یک وابستگی حذف می‌کند `media` است. بقیه عمدتاً
+زمان کامپایل را کم می‌کنند. اگر دلیل خاصی برای کم‌کردن ندارید، همان پیش‌فرض
+بهترین انتخاب است.
+
+## تست کردن
+
+**تست‌های آفلاین** به کلید و اینترنت نیاز ندارند. یک سرور HTTP آزمایشی داخل خود
+پروسه اجرا می‌کنند:
+
+</div>
+
+```bash
+cargo test
+```
+
+<div dir="rtl">
+
+**تست‌های واقعی** با API اصلی کار می‌کنند و `#[ignore]` هستند تا تصادفاً اجرا
+نشوند. تست‌های `readonly` هیچ هزینه‌ای ندارند — از همان‌ها شروع کنید:
+
+</div>
+
+```bash
+export KAVENEGAR_API_KEY=کلید-شما
+cargo test --test live -- --ignored readonly --nocapture
+```
+
+<div dir="rtl">
+
+این‌ها ساعت سرور، اعتبار حساب، لیست الگوها، و درست گزارش‌شدن کلید نامعتبر را
+بررسی می‌کنند.
+
+تست‌های ارسال، پیام واقعی می‌فرستند و **اعتبار مصرف می‌کنند**:
+
+</div>
+
+```bash
+export KAVENEGAR_TEST_RECEPTOR=09121234567
+export KAVENEGAR_TEST_SENDER=10004346        # اختیاری
+export KAVENEGAR_TEST_TEMPLATE=verify-login  # اختیاری
+cargo test --test live -- --ignored sending --nocapture --test-threads=1
+```
+
+<div dir="rtl">
+
+تستی که متغیر محیطی‌اش تنظیم نشده باشد، به‌جای شکست‌خوردن با یک پیام خودش را رد
+می‌کند.
+
+**نمونه‌ها** سریع‌ترین راه بررسی دستی هستند:
+
+</div>
+
+```bash
+cargo run --example send_sms -- 09121234567 "سلام"
+cargo run --example send_otp -- 09121234567 verify-login
+```
+
+<div dir="rtl">
+
+**هرچه CI بررسی می‌کند**، اگر بخواهید محلی اجرا کنید:
+
+</div>
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-features --all-targets -- -D warnings
+cargo test --all-features
+cargo doc --all-features --no-deps
+```
+
+<div dir="rtl">
+
+## نکته‌های مهم
+
+- **تاریخ‌ها** به فرمت Unix time (ثانیه) هستند، دقیقاً همان‌طور که API می‌فرستد.
+  اگر نوع تقویمی می‌خواهید با `chrono` یا `jiff` تبدیل کنید؛ این کتابخانه هیچ
+  وابستگی تاریخ اضافه نمی‌کند. `client.utils().server_time()` ساعت خود
+  کاوه‌نگار را می‌خواند.
+- **هزینه‌ها** به ریال هستند.
+- **`sms().receive()` پیام‌ها را مصرف می‌کند** — بار دوم همان پیام‌ها برنمی‌گردند.
+  اگر می‌خواهید بدون مصرف بخوانید از `sms().inbox_paged()` استفاده کنید.
+- **`select`، `select_outbox` و `latest_outbox`** به تنظیم IP در بخش امنیتی پنل
+  نیاز دارند، وگرنه خطای `ApiStatus::AccessDenied` می‌دهند.
+- **حساب‌های آزمایشی** فقط به شماره‌ی صاحب حساب می‌توانند پیامک بفرستند.
+- **توکن نباید فاصله داشته باشد.** کاوه‌نگار روی فاصله جدا می‌کند و پیام بی‌صدا
+  ناقص می‌شود، برای همین این کتابخانه از قبل جلویش را می‌گیرد. برای مقادیر
+  دارای فاصله از `token10` یا `token20` استفاده کنید.
+
+## لایسنس
+
+[MIT](LICENSE).
+
+این یک کتابخانه‌ی غیررسمی و متن‌باز است و وابستگی رسمی به کاوه‌نگار ندارد.
+
+</div>
