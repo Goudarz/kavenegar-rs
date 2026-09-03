@@ -207,16 +207,34 @@ api_status! {
     InvalidDate = 417, "the date is malformed or outside the accepted window";
     InsufficientCredit = 418, "the account has insufficient credit";
     ArrayLengthMismatch = 419, "the supplied arrays have differing lengths";
+    LinksNotPermitted = 420, "this account may not put links in a message body";
     InvalidCharacters = 422, "the message contains characters the line cannot carry";
     TemplateNotFound = 424, "no verification template with that name exists";
     ServicePlanRequired = 426, "this method requires the advanced service plan";
+    LineAccessRequired = 427, "using this line requires an access level to be granted";
     TokenNotDialable = 428, "a voice call cannot read out a non-numeric token";
     IpRateLimited = 429, "too many requests from this IP";
+    AccountNotVerified = 430, "the account has not completed identity verification";
     InvalidCodeStructure = 431, "the request structure is invalid";
     TokenNotInTemplate = 432, "the token parameter does not appear in the template";
     IpThrottled = 451, "the IP is throttled for exceeding the request limit";
     TestSendOnly = 501, "a trial account may only send to its own owner";
+    TooManyNumbers = 604, "too many numbers in one call; the limit is 200";
     InvalidTag = 607, "the supplied tag name is invalid";
+    MediaRequired = 800, "a media file is required for this request";
+    MediaInvalid = 801, "the media file is invalid or cannot be processed";
+    MediaTooLarge = 802, "the media file exceeds the size limit";
+    MediaBadAspectRatio = 803, "the media file's aspect ratio is not allowed";
+    MediaTooLong = 804, "the media file's duration exceeds the limit";
+    MediaUploadDenied = 805, "this account may not upload media";
+    MediaQuotaExceeded = 806, "the media upload quota has been used up";
+    MediaDuplicate = 807, "this media file has already been uploaded";
+    MediaIdInvalid = 808, "the media identifier is invalid";
+    MediaNotFound = 809, "no media file with that identifier exists";
+    MediaPendingReview = 810, "the media file is still awaiting moderation";
+    MediaRejected = 811, "the media file was rejected by moderation";
+    MediaNotAllowedByPolicy = 812, "the selected policy does not permit media";
+    MediaLineUnsupported = 813, "only domestic messenger lines can send media";
 }
 
 impl ApiStatus {
@@ -252,6 +270,28 @@ mod tests {
         assert_eq!(ApiStatus::from(200), ApiStatus::Ok);
         assert_eq!(ApiStatus::from(418), ApiStatus::InsufficientCredit);
         assert_eq!(ApiStatus::InvalidApiKey.code(), 403);
+    }
+
+    #[test]
+    fn the_media_and_account_codes_are_named() {
+        // 430 is not in Kavenegar's published table; it turned up only when
+        // calling the live API with an unverified account.
+        assert_eq!(ApiStatus::from(430), ApiStatus::AccountNotVerified);
+        assert_eq!(ApiStatus::from(420), ApiStatus::LinksNotPermitted);
+        assert_eq!(ApiStatus::from(427), ApiStatus::LineAccessRequired);
+        assert_eq!(ApiStatus::from(604), ApiStatus::TooManyNumbers);
+
+        for code in 800..=813 {
+            assert!(
+                !matches!(ApiStatus::from(code), ApiStatus::Other(_)),
+                "media code {code} should be named"
+            );
+        }
+
+        // None of them are worth retrying unchanged.
+        for code in [420, 427, 430, 604, 800, 809, 813] {
+            assert!(!ApiStatus::from(code).is_retryable(), "{code}");
+        }
     }
 
     #[test]

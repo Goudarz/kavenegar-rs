@@ -12,7 +12,7 @@
 //! cargo test --test live -- --ignored readonly
 //!
 //! # Sending checks. These cost credit and deliver real messages.
-//! export KAVENEGAR_TEST_RECEPTOR=09121234567
+//! export KAVENEGAR_TEST_RECEPTOR=09177788155
 //! export KAVENEGAR_TEST_SENDER=10004346          # optional
 //! export KAVENEGAR_TEST_TEMPLATE=verify-login    # optional, for the OTP test
 //! cargo test --test live -- --ignored sending --test-threads=1
@@ -34,6 +34,26 @@ fn client() -> Option<Kavenegar> {
     }
 }
 
+/// Reports an account-level block clearly instead of as a crate failure.
+///
+/// A key can be valid and still be refused: an account that has not finished
+/// identity verification is rejected on every endpoint.
+fn is_account_blocked(err: &Error) -> bool {
+    matches!(
+        err.api_status(),
+        Some(ApiStatus::AccountNotVerified) | Some(ApiStatus::AccountInactive)
+    )
+}
+
+macro_rules! skip_if_blocked {
+    ($err:expr) => {
+        if is_account_blocked(&$err) {
+            eprintln!("skipped: {} — fix this in the panel, not in the code", $err);
+            return;
+        }
+    };
+}
+
 fn env(name: &str) -> Option<String> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Some(value),
@@ -51,7 +71,13 @@ fn env(name: &str) -> Option<String> {
 async fn readonly_server_time() {
     let Some(client) = client() else { return };
 
-    let now = client.utils().server_time().await.expect("getdate failed");
+    let now = match client.utils().server_time().await {
+        Ok(now) => now,
+        Err(e) => {
+            skip_if_blocked!(e);
+            panic!("getdate failed: {e}");
+        }
+    };
 
     assert!(now.unix_time > 1_700_000_000, "implausible clock: {now:?}");
     println!("server time: {} (unix {})", now.datetime, now.unix_time);
@@ -71,10 +97,13 @@ async fn readonly_account_info() {
             );
             assert!(!info.account_type.is_empty());
         }
-        Err(Error::Api(e)) if e.status() == ApiStatus::InvalidApiKey => {
+        Err(Error::Api(ref e)) if e.status() == ApiStatus::InvalidApiKey => {
             panic!("KAVENEGAR_API_KEY was rejected: {e}");
         }
-        Err(e) => panic!("account/info failed: {e}"),
+        Err(e) => {
+            skip_if_blocked!(e);
+            panic!("account/info failed: {e}");
+        }
     }
 }
 
@@ -84,11 +113,13 @@ async fn readonly_account_info() {
 async fn readonly_template_list() {
     let Some(client) = client() else { return };
 
-    let page = client
-        .verify()
-        .templates()
-        .await
-        .expect("templatelist failed");
+    let page = match client.verify().templates().await {
+        Ok(page) => page,
+        Err(e) => {
+            skip_if_blocked!(e);
+            panic!("templatelist failed: {e}");
+        }
+    };
 
     println!(
         "{} templates (page {} of {})",
@@ -113,10 +144,13 @@ async fn readonly_latest_outbox() {
                 println!("  {} -> {} ({})", m.message_id, m.receptor, m.status);
             }
         }
-        Err(Error::Api(e)) if e.status() == ApiStatus::AccessDenied => {
+        Err(Error::Api(ref e)) if e.status() == ApiStatus::AccessDenied => {
             eprintln!("skipped: latestoutbox needs an IP allowlist entry ({e})");
         }
-        Err(e) => panic!("latestoutbox failed: {e}"),
+        Err(e) => {
+            skip_if_blocked!(e);
+            panic!("latestoutbox failed: {e}");
+        }
     }
 }
 
@@ -142,7 +176,13 @@ async fn sending_sms_round_trip() {
         request = request.sender(sender);
     }
 
-    let sent = request.await.expect("send failed");
+    let sent = match request.await {
+        Ok(sent) => sent,
+        Err(e) => {
+            skip_if_blocked!(e);
+            panic!("send failed: {e}");
+        }
+    };
     assert_eq!(sent.len(), 1, "expected one result per recipient");
 
     let message = &sent[0];
@@ -183,10 +223,13 @@ async fn sending_verify_lookup() {
             println!("otp sent id {} status {}", sent.message_id, sent.status);
             assert!(sent.message_id > 0);
         }
-        Err(Error::Api(e)) if e.status() == ApiStatus::TemplateNotFound => {
+        Err(Error::Api(ref e)) if e.status() == ApiStatus::TemplateNotFound => {
             panic!("no template named `{template}`: {e}");
         }
-        Err(e) => panic!("lookup failed: {e}"),
+        Err(e) => {
+            skip_if_blocked!(e);
+            panic!("lookup failed: {e}");
+        }
     }
 }
 

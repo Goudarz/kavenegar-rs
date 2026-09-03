@@ -33,7 +33,9 @@ Initial release. Covers all 32 endpoints documented at
   `total_count`, `current_page`, `total_pages`, `page_size` and `next_page()`.
 - Typed `ApiStatus`, `MessageStatus`, `MediaStatus` and `BlockedState` enums
   naming every documented code, each with an `Other(_)` variant so a new
-  server-side code decodes instead of failing.
+  server-side code decodes instead of failing. `ApiStatus` also names `430`
+  (account not verified), which the live API returns but the published table
+  does not list.
 - `Error::is_retryable()` to separate transient failures from permanent ones.
 - Local validation before a request is spent: recipient/message/local-id list
   lengths, tokens containing whitespace, template names, `switch_ttl` range,
