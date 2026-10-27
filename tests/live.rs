@@ -234,8 +234,11 @@ async fn sending_verify_lookup() {
     }
 }
 
-/// Confirms a bad key is reported as [`ApiStatus::InvalidApiKey`] rather than
-/// as a transport error. Costs nothing and needs no configuration.
+/// Confirms a bad key is reported as an API error rather than as a transport
+/// error. Costs nothing and needs no configuration.
+///
+/// Kavenegar currently answers this malformed key with 404 ("unknown method")
+/// rather than 403, so only the error kind is asserted, not the code.
 #[tokio::test]
 #[ignore = "talks to the real API"]
 async fn readonly_rejects_a_bad_key() {
@@ -248,6 +251,15 @@ async fn readonly_rejects_a_bad_key() {
         .expect_err("a bogus key should not succeed");
 
     println!("bad key reported as: {err}");
+    if let Error::Http(transport) = &err {
+        panic!(
+            "could not reach {} ({transport}). This is the network between \
+             this machine and Kavenegar — a VPN, proxy or firewall — not the \
+             crate; check with `curl {}/0/utils/getdate.json`",
+            kavenegar::DEFAULT_BASE_URL,
+            kavenegar::DEFAULT_BASE_URL,
+        );
+    }
     assert!(
         matches!(err, Error::Api(_)),
         "expected an API error, got {err:?}"

@@ -9,7 +9,7 @@ breaking changes; patch bumps never do.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-03
+## [0.1.0] - 2026-10-27
 
 Initial release. Covers all 32 endpoints documented at
 <https://kavenegar.com/rest.html>.
@@ -20,17 +20,25 @@ Initial release. Covers all 32 endpoints documented at
 - `sms()` — `send`, `send_array`, `status`, `status_by_local_id`,
   `status_by_receptor`, `select`, `select_outbox`, `latest_outbox`,
   `count_outbox`, `cancel`, `receive`, `inbox_paged`, `count_inbox`.
+  `send` and `send_array` take every documented option, including `policy`
+  (a sending policy) and `media_id` (an uploaded image or video).
 - `verify()` — `lookup` for one-time passwords, plus full template management:
   `templates`, `template`, `add_template`, `update_template`, `clone_template`,
   `delete_template`.
 - `call()` — `text_to_speech` for voice delivery.
 - `account()` — `info`, `config`, `update_config`.
 - `line()` — `blocked`, `block`, `unblock`, `is_blocked`, all scoped to a line
-  as the API requires.
+  as the API requires, with a typed `BlockReason`.
 - `media()` — `upload`, `list`, `get`, `delete`.
 - `utils()` — `server_time`.
 - `Page<T>` for paginated endpoints: dereferences to a slice and carries
   `total_count`, `current_page`, `total_pages`, `page_size` and `next_page()`.
+- Each endpoint is called with the HTTP verb Kavenegar documents for it:
+  `line/blocked/remove` and `media/delete` as DELETE, `line/blocked/exists`,
+  `media/list`, `media/get` and reading `account/config` as GET, everything
+  else as a form POST.
+- Responses decode even where the API is loose about types: numbers sent as
+  strings, and `null` where text is expected, no longer fail a whole call.
 - Typed `ApiStatus`, `MessageStatus`, `MediaStatus` and `BlockedState` enums
   naming every documented code, each with an `Other(_)` variant so a new
   server-side code decodes instead of failing. `ApiStatus` also names `430`
@@ -38,8 +46,10 @@ Initial release. Covers all 32 endpoints documented at
   does not list.
 - `Error::is_retryable()` to separate transient failures from permanent ones.
 - Local validation before a request is spent: recipient/message/local-id list
-  lengths, tokens containing whitespace, template names, `switch_ttl` range,
-  `%token` presence, and the 200-recipient blocked-list cap.
+  lengths, the documented per-call limits (200 recipients, 50 unblocks, 500
+  message ids), date windows that end before they start, lookup token rules
+  (length, spaces, newlines, underscores), template names, `switch_ttl` range,
+  and `%token` presence.
 - Sub-account support (`sub_account_api_key`, `sub_account_local_id`) on every
   `verify` template endpoint, for resellers managing a customer's templates.
 - Hardening against the API key escaping through a log: transport errors are

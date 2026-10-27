@@ -1,6 +1,8 @@
 //! Paginated results.
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
+
+use crate::de::lenient_i64;
 
 /// A page of results, plus the counters needed to fetch the next one.
 ///
@@ -12,8 +14,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// for template in &page {
 ///     println!("{}", template.name);
 /// }
-/// if page.has_more() {
-///     let next = client.verify().templates().page(page.current_page as u32 + 1).await?;
+/// if let Some(next) = page.next_page() {
+///     let following = client.verify().templates().page(next).await?;
 /// }
 /// # Ok(())
 /// # }
@@ -39,9 +41,15 @@ impl<T> Page<T> {
         self.current_page < self.total_pages
     }
 
-    /// The number to pass to the next request, if there is a next page.
-    pub fn next_page(&self) -> Option<i64> {
-        self.has_more().then(|| self.current_page + 1)
+    /// The number to pass to the next request's `page`, if there is a next
+    /// page.
+    pub fn next_page(&self) -> Option<u32> {
+        if !self.has_more() {
+            return None;
+        }
+        self.current_page
+            .checked_add(1)
+            .and_then(|next| u32::try_from(next).ok())
     }
 
     /// Drops the pagination counters, keeping only the records.
@@ -130,23 +138,6 @@ impl PageMeta {
             page_size: self.page_size,
         }
     }
-}
-
-/// Accepts an integer whether the API sends it as a number or a string.
-fn lenient_i64<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum NumberOrString {
-        Number(i64),
-        String(String),
-        Null,
-    }
-
-    Ok(match NumberOrString::deserialize(d)? {
-        NumberOrString::Number(n) => n,
-        NumberOrString::String(s) => s.trim().parse().unwrap_or_default(),
-        NumberOrString::Null => 0,
-    })
 }
 
 #[cfg(test)]

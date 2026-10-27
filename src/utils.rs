@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::Kavenegar;
+use crate::client::{Kavenegar, Verb};
+use crate::de::{lenient_i64, lenient_string};
 use crate::error::Result;
 
 const MODULE: &str = "utils";
@@ -32,7 +33,9 @@ impl<'a> UtilsService<'a> {
     /// # }
     /// ```
     pub async fn server_time(self) -> Result<ServerTime> {
-        self.client.call_one(MODULE, "getdate", Vec::new()).await
+        self.client
+            .call_one(Verb::Post, MODULE, "getdate", Vec::new())
+            .await
     }
 }
 
@@ -41,28 +44,28 @@ impl<'a> UtilsService<'a> {
 #[non_exhaustive]
 pub struct ServerTime {
     /// The time formatted by the server, in Persian.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub datetime: String,
     /// Year.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub year: i64,
     /// Month.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub month: i64,
     /// Day.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub day: i64,
     /// Hour, on a 24-hour clock.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub hour: i64,
     /// Minute.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub minute: i64,
     /// Second.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub second: i64,
     /// The same instant as a Unix timestamp in seconds.
-    #[serde(rename = "unixtime", default)]
+    #[serde(rename = "unixtime", default, deserialize_with = "lenient_i64")]
     pub unix_time: i64,
 }
 

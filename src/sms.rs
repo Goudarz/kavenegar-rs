@@ -4,12 +4,19 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::{BoxFuture, Kavenegar};
+use crate::client::{BoxFuture, Kavenegar, Verb};
+use crate::de::lenient_i64;
 use crate::error::{Error, Result};
 use crate::models::Message;
 use crate::page::Page;
 
 const MODULE: &str = "sms";
+
+/// The most recipients Kavenegar accepts in one send call.
+const MAX_RECIPIENTS: usize = 200;
+
+/// The most message ids Kavenegar accepts in one status, select or cancel call.
+const MAX_MESSAGE_IDS: usize = 500;
 
 /// Entry point for the `sms` endpoints, from [`Kavenegar::sms`].
 #[derive(Debug, Clone, Copy)]
@@ -53,6 +60,8 @@ impl<'a> SmsService<'a> {
             local_ids: Vec::new(),
             hide: false,
             tag: None,
+            policy: None,
+            media_id: None,
         }
     }
 
@@ -89,19 +98,21 @@ impl<'a> SmsService<'a> {
             local_ids: Vec::new(),
             hide: false,
             tag: None,
+            policy: None,
+            media_id: None,
         }
     }
 
     /// Looks up the delivery status of previously sent messages.
     ///
-    /// Kavenegar accepts up to 500 identifiers per call.
+    /// Up to 500 identifiers per call. Only messages from the last 48 hours
+    /// are reported; older ones come back as [`MessageStatus::Invalid`].
+    ///
+    /// [`MessageStatus::Invalid`]: crate::MessageStatus::Invalid
     pub async fn status(self, message_ids: impl IntoIterator<Item = i64>) -> Result<Vec<Message>> {
-        let ids = join_ids(message_ids);
-        if ids.is_empty() {
-            return Err(Error::invalid("message_ids", "must not be empty"));
-        }
+        let ids = message_id_list(message_ids)?;
         self.client
-            .call_list(MODULE, "status", vec![("messageid", ids)])
+            .call_list(Verb::Post, MODULE, "status", vec![("messageid", ids)])
             .await
     }
 
@@ -109,14 +120,19 @@ impl<'a> SmsService<'a> {
     /// time, for messages sent within the last 12 hours.
     pub async fn status_by_local_id(
         self,
-        local_ids: impl IntoIterator<Item = impl Into<String>>,
+        local_ids: impl IntoIterator<Item = i64>,
     ) -> Result<Vec<Message>> {
-        let ids = join_strings(local_ids);
+        let ids = join_ids(local_ids);
         if ids.is_empty() {
             return Err(Error::invalid("local_ids", "must not be empty"));
         }
         self.client
-            .call_list(MODULE, "statuslocalmessageid", vec![("localid", ids)])
+            .call_list(
+                Verb::Post,
+                MODULE,
+                "statuslocalmessageid",
+                vec![("localid", ids)],
+            )
             .await
     }
 
@@ -139,19 +155,25 @@ impl<'a> SmsService<'a> {
     }
 
     /// Fetches full records, including body and cost, for the given messages.
+    ///
+    /// Up to 500 identifiers per call. Needs an IP allowlist entry in the
+    /// panel, or fails with [`ApiStatus::AccessDenied`].
+    ///
+    /// [`ApiStatus::AccessDenied`]: crate::ApiStatus::AccessDenied
     pub async fn select(self, message_ids: impl IntoIterator<Item = i64>) -> Result<Vec<Message>> {
-        let ids = join_ids(message_ids);
-        if ids.is_empty() {
-            return Err(Error::invalid("message_ids", "must not be empty"));
-        }
+        let ids = message_id_list(message_ids)?;
         self.client
-            .call_list(MODULE, "select", vec![("messageid", ids)])
+            .call_list(Verb::Post, MODULE, "select", vec![("messageid", ids)])
             .await
     }
 
     /// Lists sent messages in a time window, as Unix timestamps in seconds.
     ///
-    /// The window may not exceed one day.
+    /// The window may not exceed one day, may start at most three days ago,
+    /// and returns at most 500 records. Needs an IP allowlist entry in the
+    /// panel, or fails with [`ApiStatus::AccessDenied`].
+    ///
+    /// [`ApiStatus::AccessDenied`]: crate::ApiStatus::AccessDenied
     pub fn select_outbox(self, start_date: i64) -> SelectOutboxBuilder<'a> {
         SelectOutboxBuilder {
             client: self.client,
@@ -162,6 +184,11 @@ impl<'a> SmsService<'a> {
     }
 
     /// Lists the most recently sent messages, newest first.
+    ///
+    /// Needs an IP allowlist entry in the panel, or fails with
+    /// [`ApiStatus::AccessDenied`].
+    ///
+    /// [`ApiStatus::AccessDenied`]: crate::ApiStatus::AccessDenied
     pub fn latest_outbox(self) -> LatestOutboxBuilder<'a> {
         LatestOutboxBuilder {
             client: self.client,
@@ -180,33 +207,37 @@ impl<'a> SmsService<'a> {
         }
     }
 
-    /// Cancels messages that are still queued or scheduled.
+    /// Cancels scheduled messages, refunding their cost.
+    ///
+    /// Only a message sent with a future date can be cancelled. Up to 500
+    /// identifiers per call.
     pub async fn cancel(self, message_ids: impl IntoIterator<Item = i64>) -> Result<Vec<Message>> {
-        let ids = join_ids(message_ids);
-        if ids.is_empty() {
-            return Err(Error::invalid("message_ids", "must not be empty"));
-        }
+        let ids = message_id_list(message_ids)?;
         self.client
-            .call_list(MODULE, "cancel", vec![("messageid", ids)])
+            .call_list(Verb::Post, MODULE, "cancel", vec![("messageid", ids)])
             .await
     }
 
-    /// Fetches messages received on one of your lines.
+    /// Fetches messages received on one of your lines, 100 at a time.
     ///
-    /// Each message is returned only once; a second call will not repeat it.
+    /// By default this fetches unread messages, and Kavenegar marks every
+    /// message it returns as read — so a second call will not repeat them.
+    /// Keep calling while a full batch of 100 comes back.
     pub fn receive(self, line_number: impl Into<String>) -> ReceiveBuilder<'a> {
         ReceiveBuilder {
             client: self.client,
             line_number: line_number.into(),
-            read_unread: true,
+            unread: true,
         }
     }
 
-    /// Fetches received messages a page at a time, without consuming them.
+    /// Fetches received messages a page at a time, 200 per page.
     ///
-    /// Unlike [`SmsService::receive`], this can be called repeatedly for the
-    /// same messages, which makes it the safer choice when your handler might
-    /// crash mid-batch. A page holds 200 messages.
+    /// Like [`SmsService::receive`], Kavenegar marks every message it returns
+    /// as read, so asking for [`InboxPagedBuilder::unread`] twice does not
+    /// return the same messages twice. What this adds is a date window and
+    /// page counters. The window defaults to the last two days, which is also
+    /// the widest allowed.
     ///
     /// ```no_run
     /// # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
@@ -248,9 +279,11 @@ pub struct SendBuilder<'a> {
     sender: Option<String>,
     date: Option<i64>,
     message_type: Option<MessageType>,
-    local_ids: Vec<String>,
+    local_ids: Vec<i64>,
     hide: bool,
     tag: Option<String>,
+    policy: Option<String>,
+    media_id: Option<String>,
 }
 
 impl<'a> SendBuilder<'a> {
@@ -266,19 +299,20 @@ impl<'a> SendBuilder<'a> {
         self
     }
 
-    /// Chooses how the handset presents the message.
+    /// Chooses how the handset presents the message. Only `3000` lines
+    /// honour this.
     pub fn message_type(mut self, message_type: MessageType) -> Self {
         self.message_type = Some(message_type);
         self
     }
 
-    /// Attaches your own identifiers, so status can later be looked up with
-    /// [`SmsService::status_by_local_id`].
+    /// Attaches your own numeric identifiers, so status can later be looked
+    /// up with [`SmsService::status_by_local_id`].
     ///
     /// Supply exactly one per recipient. Kavenegar treats a repeated local id
-    /// as a duplicate and will not send the message twice.
-    pub fn local_ids(mut self, local_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.local_ids = local_ids.into_iter().map(Into::into).collect();
+    /// as a duplicate: it does not send again, and returns the earlier record.
+    pub fn local_ids(mut self, local_ids: impl IntoIterator<Item = i64>) -> Self {
+        self.local_ids = local_ids.into_iter().collect();
         self
     }
 
@@ -289,18 +323,35 @@ impl<'a> SendBuilder<'a> {
     }
 
     /// Tags the message, for grouping in reports.
+    ///
+    /// The tag must already exist in your panel, or Kavenegar rejects the
+    /// send with [`ApiStatus::InvalidTag`].
+    ///
+    /// [`ApiStatus::InvalidTag`]: crate::ApiStatus::InvalidTag
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
     }
 
+    /// Sends through a named sending policy defined on your account, rather
+    /// than a single line.
+    pub fn policy(mut self, policy: impl Into<String>) -> Self {
+        self.policy = Some(policy.into());
+        self
+    }
+
+    /// Attaches an uploaded image or video, by the id `media().upload()`
+    /// returned.
+    ///
+    /// Only domestic messenger lines can carry media; with a policy, every
+    /// line in it must be one.
+    pub fn media_id(mut self, media_id: impl Into<String>) -> Self {
+        self.media_id = Some(media_id.into());
+        self
+    }
+
     fn into_params(self) -> Result<(&'a Kavenegar, Vec<(&'static str, String)>)> {
-        if self.receptors.is_empty() {
-            return Err(Error::invalid(
-                "receptors",
-                "at least one recipient is required",
-            ));
-        }
+        check_recipient_count(self.receptors.len())?;
         if self.message.trim().is_empty() {
             return Err(Error::invalid("message", "must not be empty"));
         }
@@ -329,13 +380,19 @@ impl<'a> SendBuilder<'a> {
             params.push(("type", message_type.code().to_owned()));
         }
         if !self.local_ids.is_empty() {
-            params.push(("localid", self.local_ids.join(",")));
+            params.push(("localid", join_ids(self.local_ids)));
         }
         if self.hide {
             params.push(("hide", "1".to_owned()));
         }
         if let Some(tag) = self.tag {
             params.push(("tag", tag));
+        }
+        if let Some(policy) = self.policy {
+            params.push(("policy", policy));
+        }
+        if let Some(media_id) = self.media_id {
+            params.push(("mediaid", media_id));
         }
         Ok((self.client, params))
     }
@@ -348,7 +405,7 @@ impl<'a> IntoFuture for SendBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let (client, params) = self.into_params()?;
-            client.call_list(MODULE, "send", params).await
+            client.call_list(Verb::Post, MODULE, "send", params).await
         })
     }
 }
@@ -363,9 +420,11 @@ pub struct SendArrayBuilder<'a> {
     senders: Vec<String>,
     date: Option<i64>,
     message_types: Vec<MessageType>,
-    local_ids: Vec<String>,
+    local_ids: Vec<i64>,
     hide: bool,
     tag: Option<String>,
+    policy: Option<String>,
+    media_id: Option<String>,
 }
 
 impl<'a> SendArrayBuilder<'a> {
@@ -400,9 +459,11 @@ impl<'a> SendArrayBuilder<'a> {
         self
     }
 
-    /// Attaches your own identifiers, one per recipient.
-    pub fn local_ids(mut self, local_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.local_ids = local_ids.into_iter().map(Into::into).collect();
+    /// Attaches your own numeric identifiers, one per recipient.
+    ///
+    /// As with [`SendBuilder::local_ids`], a repeated id is not sent again.
+    pub fn local_ids(mut self, local_ids: impl IntoIterator<Item = i64>) -> Self {
+        self.local_ids = local_ids.into_iter().collect();
         self
     }
 
@@ -412,19 +473,28 @@ impl<'a> SendArrayBuilder<'a> {
         self
     }
 
-    /// Tags the batch, for grouping in reports.
+    /// Tags the batch, for grouping in reports. The tag must already exist
+    /// in your panel.
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
     }
 
+    /// Sends through a named sending policy defined on your account.
+    pub fn policy(mut self, policy: impl Into<String>) -> Self {
+        self.policy = Some(policy.into());
+        self
+    }
+
+    /// Attaches an uploaded image or video to every message in the batch.
+    /// Only domestic messenger lines can carry media.
+    pub fn media_id(mut self, media_id: impl Into<String>) -> Self {
+        self.media_id = Some(media_id.into());
+        self
+    }
+
     fn into_params(self) -> Result<(&'a Kavenegar, Vec<(&'static str, String)>)> {
-        if self.receptors.is_empty() {
-            return Err(Error::invalid(
-                "receptors",
-                "at least one recipient is required",
-            ));
-        }
+        check_recipient_count(self.receptors.len())?;
         if self.receptors.len() != self.messages.len() {
             return Err(Error::invalid(
                 "messages",
@@ -432,6 +502,19 @@ impl<'a> SendArrayBuilder<'a> {
                     "must match the recipient count: {} recipients but {} messages",
                     self.receptors.len(),
                     self.messages.len()
+                ),
+            ));
+        }
+        if self.messages.iter().any(|m| m.trim().is_empty()) {
+            return Err(Error::invalid("messages", "no message may be empty"));
+        }
+        if !self.message_types.is_empty() && self.message_types.len() != self.receptors.len() {
+            return Err(Error::invalid(
+                "message_types",
+                format!(
+                    "must match the recipient count: {} recipients but {} types",
+                    self.receptors.len(),
+                    self.message_types.len()
                 ),
             ));
         }
@@ -476,13 +559,21 @@ impl<'a> SendArrayBuilder<'a> {
             params.push(("type", format!("[{}]", codes.join(","))));
         }
         if !self.local_ids.is_empty() {
-            params.push(("localid", self.local_ids.join(",")));
+            // Documented as an array of longs, under a different name than
+            // `send` uses.
+            params.push(("localmessageids", format!("[{}]", join_ids(self.local_ids))));
         }
         if self.hide {
             params.push(("hide", "1".to_owned()));
         }
         if let Some(tag) = self.tag {
             params.push(("tag", tag));
+        }
+        if let Some(policy) = self.policy {
+            params.push(("policy", policy));
+        }
+        if let Some(media_id) = self.media_id {
+            params.push(("mediaid", media_id));
         }
         Ok((self.client, params))
     }
@@ -495,7 +586,9 @@ impl<'a> IntoFuture for SendArrayBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let (client, params) = self.into_params()?;
-            client.call_list(MODULE, "sendarray", params).await
+            client
+                .call_list(Verb::Post, MODULE, "sendarray", params)
+                .await
         })
     }
 }
@@ -527,14 +620,7 @@ impl<'a> IntoFuture for StatusByReceptorBuilder<'a> {
             if self.receptor.trim().is_empty() {
                 return Err(Error::invalid("receptor", "must not be empty"));
             }
-            if let Some(end_date) = self.end_date
-                && end_date < self.start_date
-            {
-                return Err(Error::invalid(
-                    "end_date",
-                    "must not be earlier than start_date",
-                ));
-            }
+            check_window(self.start_date, self.end_date)?;
 
             let mut params = vec![
                 ("receptor", self.receptor),
@@ -544,7 +630,7 @@ impl<'a> IntoFuture for StatusByReceptorBuilder<'a> {
                 params.push(("enddate", end_date.to_string()));
             }
             self.client
-                .call_list(MODULE, "statusbyreceptor", params)
+                .call_list(Verb::Post, MODULE, "statusbyreceptor", params)
                 .await
         })
     }
@@ -580,6 +666,7 @@ impl<'a> IntoFuture for SelectOutboxBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
+            check_window(self.start_date, self.end_date)?;
             let mut params = vec![("startdate", self.start_date.to_string())];
             if let Some(end_date) = self.end_date {
                 params.push(("enddate", end_date.to_string()));
@@ -587,7 +674,9 @@ impl<'a> IntoFuture for SelectOutboxBuilder<'a> {
             if let Some(sender) = self.sender {
                 params.push(("sender", sender));
             }
-            self.client.call_list(MODULE, "selectoutbox", params).await
+            self.client
+                .call_list(Verb::Post, MODULE, "selectoutbox", params)
+                .await
         })
     }
 }
@@ -602,7 +691,8 @@ pub struct LatestOutboxBuilder<'a> {
 }
 
 impl<'a> LatestOutboxBuilder<'a> {
-    /// Limits how many records are returned. Kavenegar caps this at 500.
+    /// Limits how many records are returned. Defaults to, and is capped at,
+    /// 500.
     pub fn page_size(mut self, page_size: u32) -> Self {
         self.page_size = Some(page_size);
         self
@@ -628,7 +718,9 @@ impl<'a> IntoFuture for LatestOutboxBuilder<'a> {
             if let Some(sender) = self.sender {
                 params.push(("sender", sender));
             }
-            self.client.call_list(MODULE, "latestoutbox", params).await
+            self.client
+                .call_list(Verb::Post, MODULE, "latestoutbox", params)
+                .await
         })
     }
 }
@@ -663,6 +755,7 @@ impl<'a> IntoFuture for CountOutboxBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
+            check_window(self.start_date, self.end_date)?;
             let mut params = vec![("startdate", self.start_date.to_string())];
             if let Some(end_date) = self.end_date {
                 params.push(("enddate", end_date.to_string()));
@@ -670,7 +763,9 @@ impl<'a> IntoFuture for CountOutboxBuilder<'a> {
             if let Some(status) = self.status {
                 params.push(("status", status.to_string()));
             }
-            self.client.call_one(MODULE, "countoutbox", params).await
+            self.client
+                .call_one(Verb::Post, MODULE, "countoutbox", params)
+                .await
         })
     }
 }
@@ -681,19 +776,19 @@ impl<'a> IntoFuture for CountOutboxBuilder<'a> {
 pub struct ReceiveBuilder<'a> {
     client: &'a Kavenegar,
     line_number: String,
-    read_unread: bool,
+    unread: bool,
 }
 
 impl<'a> ReceiveBuilder<'a> {
     /// Fetches unread messages and marks them read. This is the default.
     pub fn unread(mut self) -> Self {
-        self.read_unread = true;
+        self.unread = true;
         self
     }
 
-    /// Fetches messages already marked read, without changing their state.
+    /// Fetches messages already marked read.
     pub fn already_read(mut self) -> Self {
-        self.read_unread = false;
+        self.unread = false;
         self
     }
 }
@@ -709,12 +804,11 @@ impl<'a> IntoFuture for ReceiveBuilder<'a> {
             }
             let params = vec![
                 ("linenumber", self.line_number),
-                (
-                    "isread",
-                    if self.read_unread { "0" } else { "1" }.to_owned(),
-                ),
+                ("isread", if self.unread { "0" } else { "1" }.to_owned()),
             ];
-            self.client.call_list(MODULE, "receive", params).await
+            self.client
+                .call_list(Verb::Post, MODULE, "receive", params)
+                .await
         })
     }
 }
@@ -746,7 +840,8 @@ impl<'a> InboxPagedBuilder<'a> {
 
     /// Starts the window at this Unix timestamp.
     ///
-    /// Defaults to the last two days, which is also the widest window allowed.
+    /// Without a start, Kavenegar reads the last two days, which is also the
+    /// widest window allowed.
     pub fn start_date(mut self, start_date: i64) -> Self {
         self.start_date = Some(start_date);
         self
@@ -774,13 +869,8 @@ impl<'a> IntoFuture for InboxPagedBuilder<'a> {
             if self.line_number.trim().is_empty() {
                 return Err(Error::invalid("line_number", "must not be empty"));
             }
-            if let (Some(start), Some(end)) = (self.start_date, self.end_date)
-                && end < start
-            {
-                return Err(Error::invalid(
-                    "end_date",
-                    "must not be earlier than start_date",
-                ));
+            if let Some(start) = self.start_date {
+                check_window(start, self.end_date)?;
             }
 
             let mut params = vec![("linenumber", self.line_number)];
@@ -796,7 +886,9 @@ impl<'a> IntoFuture for InboxPagedBuilder<'a> {
             if let Some(page_number) = self.page_number {
                 params.push(("pagenumber", page_number.to_string()));
             }
-            self.client.call_page(MODULE, "inboxpaged", params).await
+            self.client
+                .call_page(Verb::Post, MODULE, "inboxpaged", params)
+                .await
         })
     }
 }
@@ -838,6 +930,7 @@ impl<'a> IntoFuture for CountInboxBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
+            check_window(self.start_date, self.end_date)?;
             let mut params = vec![("startdate", self.start_date.to_string())];
             if let Some(end_date) = self.end_date {
                 params.push(("enddate", end_date.to_string()));
@@ -848,7 +941,9 @@ impl<'a> IntoFuture for CountInboxBuilder<'a> {
             if let Some(is_read) = self.read_unread {
                 params.push(("isread", if is_read { "1" } else { "0" }.to_owned()));
             }
-            self.client.call_one(MODULE, "countinbox", params).await
+            self.client
+                .call_one(Verb::Post, MODULE, "countinbox", params)
+                .await
         })
     }
 }
@@ -884,19 +979,19 @@ impl MessageType {
 #[non_exhaustive]
 pub struct OutboxCount {
     /// Start of the counted window, as a Unix timestamp.
-    #[serde(rename = "startdate", default)]
+    #[serde(rename = "startdate", default, deserialize_with = "lenient_i64")]
     pub start_date: i64,
     /// End of the counted window, as a Unix timestamp.
-    #[serde(rename = "enddate", default)]
+    #[serde(rename = "enddate", default, deserialize_with = "lenient_i64")]
     pub end_date: i64,
     /// Total number of message parts.
-    #[serde(rename = "sumpart", default)]
+    #[serde(rename = "sumpart", default, deserialize_with = "lenient_i64")]
     pub sum_part: i64,
     /// Total number of messages.
-    #[serde(rename = "sumcount", default)]
+    #[serde(rename = "sumcount", default, deserialize_with = "lenient_i64")]
     pub sum_count: i64,
     /// Total cost in Rials.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub cost: i64,
 }
 
@@ -905,13 +1000,13 @@ pub struct OutboxCount {
 #[non_exhaustive]
 pub struct InboxCount {
     /// Start of the counted window, as a Unix timestamp.
-    #[serde(rename = "startdate", default)]
+    #[serde(rename = "startdate", default, deserialize_with = "lenient_i64")]
     pub start_date: i64,
     /// End of the counted window, as a Unix timestamp.
-    #[serde(rename = "enddate", default)]
+    #[serde(rename = "enddate", default, deserialize_with = "lenient_i64")]
     pub end_date: i64,
     /// Total number of messages received.
-    #[serde(rename = "sumcount", default)]
+    #[serde(rename = "sumcount", default, deserialize_with = "lenient_i64")]
     pub sum_count: i64,
 }
 
@@ -922,12 +1017,48 @@ fn join_ids(ids: impl IntoIterator<Item = i64>) -> String {
         .join(",")
 }
 
-fn join_strings(values: impl IntoIterator<Item = impl Into<String>>) -> String {
-    values
-        .into_iter()
-        .map(Into::into)
-        .collect::<Vec<_>>()
-        .join(",")
+/// Validates and joins the ids for status, select and cancel.
+fn message_id_list(ids: impl IntoIterator<Item = i64>) -> Result<String> {
+    let ids: Vec<i64> = ids.into_iter().collect();
+    if ids.is_empty() {
+        return Err(Error::invalid("message_ids", "must not be empty"));
+    }
+    if ids.len() > MAX_MESSAGE_IDS {
+        return Err(Error::invalid(
+            "message_ids",
+            format!("at most {MAX_MESSAGE_IDS} per call, got {}", ids.len()),
+        ));
+    }
+    Ok(join_ids(ids))
+}
+
+fn check_recipient_count(count: usize) -> Result<()> {
+    if count == 0 {
+        return Err(Error::invalid(
+            "receptors",
+            "at least one recipient is required",
+        ));
+    }
+    if count > MAX_RECIPIENTS {
+        return Err(Error::invalid(
+            "receptors",
+            format!("at most {MAX_RECIPIENTS} recipients per call, got {count}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects a window that ends before it starts, which Kavenegar answers with
+/// a 417. The longest allowed window differs per endpoint, so that check is
+/// left to the server.
+fn check_window(start: i64, end: Option<i64>) -> Result<()> {
+    match end {
+        Some(end) if end < start => Err(Error::invalid(
+            "end_date",
+            "must not be earlier than start_date",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Renders a JSON string array, which `sendarray` expects for its list fields.
@@ -985,7 +1116,7 @@ mod tests {
         let err = c
             .sms()
             .send(["0912", "0913"], "hi")
-            .local_ids(["only-one"])
+            .local_ids([1])
             .into_params()
             .unwrap_err();
         assert!(matches!(
@@ -1061,6 +1192,79 @@ mod tests {
         assert_eq!(get("receptor"), Some(r#"["0912","0913"]"#));
         assert_eq!(get("message"), Some(r#"["یک","دو"]"#));
         assert_eq!(get("sender"), Some(r#"["10004346","10004346"]"#));
+    }
+
+    #[test]
+    fn send_passes_policy_media_and_numeric_local_ids() {
+        let c = client();
+        let (_, params) = c
+            .sms()
+            .send(["0912", "0913"], "hi")
+            .local_ids([7, 8])
+            .policy("night-flow")
+            .media_id("3fa85f64-5717-4562-b3fc-2c963f66afa6")
+            .into_params()
+            .unwrap();
+
+        let get = |k: &str| {
+            params
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("localid"), Some("7,8"));
+        assert_eq!(get("policy"), Some("night-flow"));
+        assert_eq!(get("mediaid"), Some("3fa85f64-5717-4562-b3fc-2c963f66afa6"));
+    }
+
+    #[test]
+    fn send_array_names_its_local_ids_as_documented() {
+        let c = client();
+        let (_, params) = c
+            .sms()
+            .send_array(["0912", "0913"], ["a", "b"])
+            .local_ids([1, 2])
+            .message_type(MessageType::Flash)
+            .into_params()
+            .unwrap();
+
+        let get = |k: &str| {
+            params
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("localmessageids"), Some("[1,2]"));
+        assert_eq!(get("localid"), None);
+        assert_eq!(get("type"), Some("[0,0]"));
+    }
+
+    #[test]
+    fn send_enforces_the_two_hundred_recipient_cap() {
+        let c = client();
+        let many: Vec<String> = (0..201).map(|i| format!("0912{i:07}")).collect();
+        let err = c.sms().send(many, "hi").into_params().unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidParameter {
+                parameter: "receptors",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn id_lists_are_capped_at_five_hundred() {
+        assert!(message_id_list(0..500).is_ok());
+        assert!(message_id_list(0..501).is_err());
+        assert!(message_id_list(std::iter::empty()).is_err());
+    }
+
+    #[test]
+    fn a_backwards_window_is_rejected() {
+        assert!(check_window(100, Some(99)).is_err());
+        assert!(check_window(100, Some(100)).is_ok());
+        assert!(check_window(100, None).is_ok());
     }
 
     #[test]

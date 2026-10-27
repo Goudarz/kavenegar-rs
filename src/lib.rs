@@ -101,11 +101,14 @@
 
 #![doc(html_root_url = "https://docs.rs/kavenegar/0.1.0")]
 #![warn(missing_debug_implementations, rust_2018_idioms)]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+// `doc_auto_cfg` was folded into `doc_cfg` in Rust 1.92 and naming it is now a
+// hard error on the nightly docs.rs builds with.
+#![cfg_attr(docsrs, feature(doc_cfg))]
 // Test code may assert loudly; library code may not.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod client;
+mod de;
 pub mod error;
 pub mod models;
 pub mod page;
@@ -146,7 +149,9 @@ pub use crate::call::CallService;
 
 #[cfg(feature = "line")]
 #[doc(inline)]
-pub use crate::line::{BlockedNumber, BlockedResult, BlockedState, LineService};
+pub use crate::line::{
+    BlockReason, BlockedNumber, BlockedResult, BlockedState, LineService, Unblocked,
+};
 
 #[cfg(feature = "media")]
 #[doc(inline)]

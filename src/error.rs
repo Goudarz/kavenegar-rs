@@ -344,14 +344,14 @@ api_status! {
     InsufficientCredit = 418, "the account has insufficient credit";
     ArrayLengthMismatch = 419, "the supplied arrays have differing lengths";
     LinksNotPermitted = 420, "this account may not put links in a message body";
-    InvalidCharacters = 422, "the message contains characters the line cannot carry";
-    TemplateNotFound = 424, "no verification template with that name exists";
+    InvalidCharacters = 422, "the data contains characters that cannot be processed";
+    TemplateNotFound = 424, "no approved verification template has that name";
     ServicePlanRequired = 426, "this method requires the advanced service plan";
     LineAccessRequired = 427, "using this line requires an access level to be granted";
     TokenNotDialable = 428, "a voice call cannot read out a non-numeric token";
     IpRateLimited = 429, "too many requests from this IP";
     AccountNotVerified = 430, "the account has not completed identity verification";
-    InvalidCodeStructure = 431, "the request structure is invalid";
+    InvalidCodeStructure = 431, "a token contains a newline, space, underscore or separator";
     TokenNotInTemplate = 432, "the token parameter does not appear in the template";
     IpThrottled = 451, "the IP is throttled for exceeding the request limit";
     TestSendOnly = 501, "a trial account may only send to its own owner";

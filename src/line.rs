@@ -9,14 +9,18 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::client::{BoxFuture, Kavenegar};
+use crate::client::{BoxFuture, Kavenegar, Verb};
+use crate::de::{lenient_i64, lenient_opt_string, lenient_string};
 use crate::error::{Error, Result};
 use crate::page::Page;
 
 const MODULE: &str = "line/blocked";
 
-/// The most recipients Kavenegar accepts in one blocked-list call.
+/// The most recipients Kavenegar accepts in one add or exists call.
 const MAX_RECEPTORS: usize = 200;
+
+/// The most recipients Kavenegar accepts in one remove call.
+const MAX_REMOVALS: usize = 50;
 
 /// Entry point for the blocked-list endpoints, from [`Kavenegar::line`].
 #[derive(Debug, Clone, Copy)]
@@ -50,7 +54,7 @@ impl<'a> LineService<'a> {
         }
     }
 
-    /// Adds recipients to a line's blocked list.
+    /// Adds up to 200 recipients to a line's blocked list.
     ///
     /// The result reports, per recipient, whether it was newly blocked
     /// ([`BlockedState::Active`]) or already present
@@ -60,21 +64,30 @@ impl<'a> LineService<'a> {
         line_number: impl Into<String>,
         receptors: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<Vec<BlockedResult>> {
-        let params = block_params(line_number, receptors)?;
-        self.client.call_list(MODULE, "add", params).await
+        let params = block_params(line_number, receptors, MAX_RECEPTORS)?;
+        self.client
+            .call_list(Verb::Post, MODULE, "add", params)
+            .await
     }
 
-    /// Removes recipients from a line's blocked list.
+    /// Removes up to 50 recipients from a line's blocked list.
+    ///
+    /// Only blocks added through the panel or the API can be removed; a block
+    /// the recipient placed themselves (by cancelling with `11`) or one placed
+    /// by the operator cannot.
     pub async fn unblock(
         self,
         line_number: impl Into<String>,
         receptors: impl IntoIterator<Item = impl Into<String>>,
-    ) -> Result<Vec<BlockedResult>> {
-        let params = block_params(line_number, receptors)?;
-        self.client.call_list(MODULE, "remove", params).await
+    ) -> Result<Unblocked> {
+        let params = block_params(line_number, receptors, MAX_REMOVALS)?;
+        // Documented as an HTTP DELETE with its parameters in the query.
+        self.client
+            .call_one(Verb::Delete, MODULE, "remove", params)
+            .await
     }
 
-    /// Checks whether recipients are on a line's blocked list.
+    /// Checks whether up to 200 recipients are on a line's blocked list.
     ///
     /// Each result carries [`BlockedState::Active`] when the recipient is
     /// blocked, or [`BlockedState::NotExists`] when it is not.
@@ -83,8 +96,11 @@ impl<'a> LineService<'a> {
         line_number: impl Into<String>,
         receptors: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<Vec<BlockedResult>> {
-        let params = block_params(line_number, receptors)?;
-        self.client.call_list(MODULE, "exists", params).await
+        let params = block_params(line_number, receptors, MAX_RECEPTORS)?;
+        // Documented as an HTTP GET.
+        self.client
+            .call_list(Verb::Get, MODULE, "exists", params)
+            .await
     }
 }
 
@@ -96,14 +112,14 @@ pub struct BlockedListBuilder<'a> {
     line_number: String,
     page_number: Option<u32>,
     start_date: Option<i64>,
-    block_reason: Option<i64>,
+    block_reason: Option<BlockReason>,
 }
 
 impl<'a> BlockedListBuilder<'a> {
     /// Selects a page, counting from 1.
     ///
-    /// A page holds 200 records; keep requesting pages while the returned
-    /// count stays at the page size.
+    /// A page holds 200 records; [`Page::next_page`] says whether another
+    /// follows.
     pub fn page(mut self, page_number: u32) -> Self {
         self.page_number = Some(page_number);
         self
@@ -111,14 +127,14 @@ impl<'a> BlockedListBuilder<'a> {
 
     /// Lists blocks created at or after this Unix timestamp.
     ///
-    /// Defaults to the current day.
+    /// Without it, Kavenegar lists only today's blocks.
     pub fn start_date(mut self, start_date: i64) -> Self {
         self.start_date = Some(start_date);
         self
     }
 
     /// Lists only blocks created for one reason. Defaults to all reasons.
-    pub fn block_reason(mut self, block_reason: i64) -> Self {
+    pub fn block_reason(mut self, block_reason: BlockReason) -> Self {
         self.block_reason = Some(block_reason);
         self
     }
@@ -141,9 +157,11 @@ impl<'a> IntoFuture for BlockedListBuilder<'a> {
                 params.push(("startdate", start_date.to_string()));
             }
             if let Some(block_reason) = self.block_reason {
-                params.push(("blockreason", block_reason.to_string()));
+                params.push(("blockreason", block_reason.code().to_string()));
             }
-            self.client.call_page(MODULE, "list", params).await
+            self.client
+                .call_page(Verb::Post, MODULE, "list", params)
+                .await
         })
     }
 }
@@ -153,29 +171,105 @@ impl<'a> IntoFuture for BlockedListBuilder<'a> {
 #[non_exhaustive]
 pub struct BlockedNumber {
     /// The blocked recipient number, partially masked by the API.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub number: String,
     /// Why the recipient was blocked.
     #[serde(rename = "blockreason", default)]
-    pub block_reason: i64,
+    pub block_reason: BlockReason,
     /// When the block was recorded, as a Unix timestamp.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub date: i64,
 }
 
-/// The outcome for one recipient of a block, unblock or existence check.
+/// Why a recipient is on a line's blocked list.
+///
+/// Unknown codes are preserved in [`BlockReason::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum BlockReason {
+    /// Added through the API (0).
+    WebService,
+    /// Added in the Kavenegar panel (1).
+    Panel,
+    /// The recipient opted out by sending `11` (2).
+    OptOut,
+    /// Added by a Kavenegar administrator (3).
+    Admin,
+    /// Recorded without a reason (10).
+    #[default]
+    Unknown,
+    /// A code this crate does not recognise.
+    Other(i64),
+}
+
+impl BlockReason {
+    /// The numeric code as sent by the API.
+    pub fn code(self) -> i64 {
+        match self {
+            BlockReason::WebService => 0,
+            BlockReason::Panel => 1,
+            BlockReason::OptOut => 2,
+            BlockReason::Admin => 3,
+            BlockReason::Unknown => 10,
+            BlockReason::Other(c) => c,
+        }
+    }
+
+    /// Whether [`LineService::unblock`] can lift this block. Only blocks
+    /// added through the panel or the API can be removed.
+    pub fn is_removable(self) -> bool {
+        matches!(self, BlockReason::WebService | BlockReason::Panel)
+    }
+}
+
+impl From<i64> for BlockReason {
+    fn from(code: i64) -> Self {
+        match code {
+            0 => BlockReason::WebService,
+            1 => BlockReason::Panel,
+            2 => BlockReason::OptOut,
+            3 => BlockReason::Admin,
+            10 => BlockReason::Unknown,
+            other => BlockReason::Other(other),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BlockReason {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        // Documented as a string, shown as a number in the example.
+        Ok(BlockReason::from(lenient_i64(d)?))
+    }
+}
+
+impl Serialize for BlockReason {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_i64(self.code())
+    }
+}
+
+/// The outcome for one recipient of a block or existence check.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct BlockedResult {
     /// The line the block applies to.
-    #[serde(rename = "linenumber", default)]
+    #[serde(rename = "linenumber", default, deserialize_with = "lenient_string")]
     pub line_number: String,
     /// The recipient this outcome refers to.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub receptor: String,
     /// What happened, or what was found.
     #[serde(default)]
     pub status: BlockedState,
+}
+
+/// The outcome of [`LineService::unblock`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[non_exhaustive]
+pub struct Unblocked {
+    /// Kavenegar's summary, such as `Done-removed 1 item from blacklist`.
+    #[serde(default, deserialize_with = "lenient_string")]
+    pub message: String,
 }
 
 /// The per-recipient status reported by the blocked-list endpoints.
@@ -202,7 +296,7 @@ impl BlockedState {
 
 impl<'de> Deserialize<'de> for BlockedState {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        let raw = String::deserialize(d)?;
+        let raw = lenient_opt_string(d)?.unwrap_or_default();
         Ok(match raw.to_ascii_lowercase().as_str() {
             "active" => BlockedState::Active,
             "alreadyexists" => BlockedState::AlreadyExists,
@@ -216,6 +310,7 @@ impl<'de> Deserialize<'de> for BlockedState {
 fn block_params(
     line_number: impl Into<String>,
     receptors: impl IntoIterator<Item = impl Into<String>>,
+    max: usize,
 ) -> Result<Vec<(&'static str, String)>> {
     let line_number = line_number.into();
     if line_number.trim().is_empty() {
@@ -229,13 +324,10 @@ fn block_params(
             "at least one recipient is required",
         ));
     }
-    if receptors.len() > MAX_RECEPTORS {
+    if receptors.len() > max {
         return Err(Error::invalid(
             "receptors",
-            format!(
-                "at most {MAX_RECEPTORS} recipients per call, got {}",
-                receptors.len()
-            ),
+            format!("at most {max} recipients per call, got {}", receptors.len()),
         ));
     }
 
@@ -251,7 +343,7 @@ mod tests {
 
     #[test]
     fn block_requires_a_line_and_a_recipient() {
-        let err = block_params("", ["0912"]).unwrap_err();
+        let err = block_params("", ["0912"], MAX_RECEPTORS).unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidParameter {
@@ -260,7 +352,7 @@ mod tests {
             }
         ));
 
-        let err = block_params("10004346", Vec::<String>::new()).unwrap_err();
+        let err = block_params("10004346", Vec::<String>::new(), MAX_RECEPTORS).unwrap_err();
         assert!(matches!(
             err,
             Error::InvalidParameter {
@@ -271,24 +363,19 @@ mod tests {
     }
 
     #[test]
-    fn block_enforces_the_two_hundred_recipient_cap() {
-        let many: Vec<String> = (0..201).map(|i| format!("0912000{i:04}")).collect();
-        let err = block_params("10004346", many).unwrap_err();
-        assert!(matches!(
-            err,
-            Error::InvalidParameter {
-                parameter: "receptors",
-                ..
-            }
-        ));
+    fn block_and_exists_cap_at_two_hundred_and_remove_at_fifty() {
+        let numbers =
+            |n: usize| -> Vec<String> { (0..n).map(|i| format!("0912000{i:04}")).collect() };
 
-        let ok: Vec<String> = (0..200).map(|i| format!("0912000{i:04}")).collect();
-        assert!(block_params("10004346", ok).is_ok());
+        assert!(block_params("10004346", numbers(200), MAX_RECEPTORS).is_ok());
+        assert!(block_params("10004346", numbers(201), MAX_RECEPTORS).is_err());
+        assert!(block_params("10004346", numbers(50), MAX_REMOVALS).is_ok());
+        assert!(block_params("10004346", numbers(51), MAX_REMOVALS).is_err());
     }
 
     #[test]
     fn block_joins_recipients_with_commas() {
-        let params = block_params("10004346", ["0912", "0913"]).unwrap();
+        let params = block_params("10004346", ["0912", "0913"], MAX_RECEPTORS).unwrap();
         assert_eq!(params[0], ("linenumber", "10004346".to_owned()));
         assert_eq!(params[1], ("receptor", "0912,0913".to_owned()));
     }
@@ -299,7 +386,8 @@ mod tests {
             {"linenumber":"12345","receptor":"0911","status":"Active"},
             {"linenumber":"12345","receptor":"0922","status":"AlreadyExists"},
             {"linenumber":"12345","receptor":"0933","status":"NotExists"},
-            {"linenumber":"12345","receptor":"0944","status":"Surprise"}
+            {"linenumber":"12345","receptor":"0944","status":"Surprise"},
+            {"linenumber":12345,"receptor":"0955","status":null}
         ]"#;
         let results: Vec<BlockedResult> = serde_json::from_str(json).unwrap();
 
@@ -310,13 +398,21 @@ mod tests {
         assert_eq!(results[2].status, BlockedState::NotExists);
         assert!(!results[2].status.is_blocked());
         assert_eq!(results[3].status, BlockedState::Other);
+        assert_eq!(results[4].status, BlockedState::Other);
+        assert_eq!(results[4].line_number, "12345");
     }
 
     #[test]
     fn blocked_list_entries_use_the_list_shape() {
-        let json = r#"[{"number":"09*********","blockreason":0,"date":1740300377}]"#;
+        // `blockreason` is documented as a string but shown as a number.
+        let json = r#"[{"number":"09*********","blockreason":0,"date":1740300377},
+                       {"number":"09*********","blockreason":"2","date":0}]"#;
         let entries: Vec<BlockedNumber> = serde_json::from_str(json).unwrap();
         assert_eq!(entries[0].number, "09*********");
         assert_eq!(entries[0].date, 1740300377);
+        assert_eq!(entries[0].block_reason, BlockReason::WebService);
+        assert!(entries[0].block_reason.is_removable());
+        assert_eq!(entries[1].block_reason, BlockReason::OptOut);
+        assert!(!entries[1].block_reason.is_removable());
     }
 }

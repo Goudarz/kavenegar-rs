@@ -9,7 +9,8 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::{BoxFuture, Kavenegar};
+use crate::client::{BoxFuture, Kavenegar, Verb};
+use crate::de::{lenient_i64, lenient_string};
 use crate::error::{Error, Result};
 use crate::models::Message;
 use crate::page::Page;
@@ -229,7 +230,9 @@ impl<'a> IntoFuture for TemplateListBuilder<'a> {
                 params.push(("page", page.to_string()));
             }
             self.sub.push_into(&mut params);
-            self.client.call_page(MODULE, "templatelist", params).await
+            self.client
+                .call_page(Verb::Post, MODULE, "templatelist", params)
+                .await
         })
     }
 }
@@ -255,7 +258,9 @@ impl<'a> IntoFuture for GetTemplateBuilder<'a> {
         Box::pin(async move {
             let mut params = vec![("id", self.id.to_string())];
             self.sub.push_into(&mut params);
-            self.client.call_one(MODULE, "gettemplate", params).await
+            self.client
+                .call_one(Verb::Post, MODULE, "gettemplate", params)
+                .await
         })
     }
 }
@@ -282,7 +287,7 @@ impl<'a> IntoFuture for DeleteTemplateBuilder<'a> {
             let mut params = vec![("id", self.id.to_string())];
             self.sub.push_into(&mut params);
             self.client
-                .call_discard(MODULE, "deletetemplate", params)
+                .call_discard(Verb::Post, MODULE, "deletetemplate", params)
                 .await
         })
     }
@@ -291,9 +296,10 @@ impl<'a> IntoFuture for DeleteTemplateBuilder<'a> {
 /// Builds a call to `verify/lookup`. Await it to send the message.
 ///
 /// A template may carry up to five substitutions. `%token` is required; the
-/// rest are optional and each has its own length limit, enforced by Kavenegar:
-/// `%token2` and `%token3` are short, `%token10` and `%token20` allow longer
-/// values and permit spaces.
+/// rest are optional. Each value is at most 100 characters. `%token`,
+/// `%token2` and `%token3` may not contain spaces, newlines or underscores;
+/// `%token10` may contain up to 5 spaces and `%token20` up to 8. Values that
+/// break these rules are rejected before the request is sent.
 #[derive(Debug)]
 #[must_use = "the message is only sent when the builder is awaited"]
 pub struct LookupBuilder<'a> {
@@ -322,13 +328,13 @@ impl<'a> LookupBuilder<'a> {
         self
     }
 
-    /// Substitutes `%token10`, which accepts a longer value with spaces.
+    /// Substitutes `%token10`, which may contain up to 5 spaces.
     pub fn token10(mut self, value: impl Into<String>) -> Self {
         self.token10 = Some(value.into());
         self
     }
 
-    /// Substitutes `%token20`, which accepts the longest value.
+    /// Substitutes `%token20`, which may contain up to 8 spaces.
     pub fn token20(mut self, value: impl Into<String>) -> Self {
         self.token20 = Some(value.into());
         self
@@ -337,7 +343,8 @@ impl<'a> LookupBuilder<'a> {
     /// Delivers the token over a voice call instead of an SMS.
     ///
     /// A voice call can only read out a numeric token; Kavenegar rejects
-    /// anything else with [`ApiStatus::TokenNotDialable`].
+    /// anything else with [`ApiStatus::TokenNotDialable`]. A landline
+    /// recipient always gets a call, whatever this is set to.
     ///
     /// [`ApiStatus::TokenNotDialable`]: crate::ApiStatus::TokenNotDialable
     pub fn channel(mut self, channel: VerifyChannel) -> Self {
@@ -361,13 +368,18 @@ impl<'a> LookupBuilder<'a> {
         if self.token.trim().is_empty() {
             return Err(Error::invalid("token", "must not be empty"));
         }
-        // Kavenegar splits parameters on whitespace, so a token containing a
-        // space silently truncates the message. Catch it before sending.
-        if self.token.contains(char::is_whitespace) {
-            return Err(Error::invalid(
-                "token",
-                "must not contain whitespace; use token10 or token20 for values with spaces",
-            ));
+        check_token("token", &self.token, 0)?;
+        if let Some(v) = &self.token2 {
+            check_token("token2", v, 0)?;
+        }
+        if let Some(v) = &self.token3 {
+            check_token("token3", v, 0)?;
+        }
+        if let Some(v) = &self.token10 {
+            check_token("token10", v, 5)?;
+        }
+        if let Some(v) = &self.token20 {
+            check_token("token20", v, 8)?;
         }
 
         let mut params = vec![
@@ -404,9 +416,45 @@ impl<'a> IntoFuture for LookupBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let (client, params) = self.into_params()?;
-            client.call_one(MODULE, "lookup", params).await
+            client.call_one(Verb::Post, MODULE, "lookup", params).await
         })
     }
+}
+
+/// The longest value Kavenegar accepts for any lookup token, in characters.
+const MAX_TOKEN_CHARS: usize = 100;
+
+/// Applies Kavenegar's token rules, which it otherwise enforces with a 431.
+///
+/// No token may contain a newline or an underscore, or exceed 100 characters.
+/// `token`, `token2` and `token3` may not contain spaces at all; `token10`
+/// and `token20` allow a fixed number of them.
+fn check_token(parameter: &'static str, value: &str, max_spaces: usize) -> Result<()> {
+    if value.chars().count() > MAX_TOKEN_CHARS {
+        return Err(Error::invalid(
+            parameter,
+            format!("must be at most {MAX_TOKEN_CHARS} characters"),
+        ));
+    }
+    if value.contains('_') {
+        return Err(Error::invalid(parameter, "must not contain underscores"));
+    }
+    if value.chars().any(|c| c.is_whitespace() && c != ' ') {
+        return Err(Error::invalid(
+            parameter,
+            "must not contain newlines, tabs or other whitespace besides spaces",
+        ));
+    }
+    let spaces = value.chars().filter(|&c| c == ' ').count();
+    if spaces > max_spaces {
+        let reason = if max_spaces == 0 {
+            "must not contain spaces; use token10 or token20 for values with spaces".to_owned()
+        } else {
+            format!("may contain at most {max_spaces} spaces, found {spaces}")
+        };
+        return Err(Error::invalid(parameter, reason));
+    }
+    Ok(())
 }
 
 /// How a verification token should reach the recipient.
@@ -697,7 +745,7 @@ impl<'a> IntoFuture for TemplateBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let (client, method, params) = self.into_params()?;
-            client.call_one(MODULE, method, params).await
+            client.call_one(Verb::Post, MODULE, method, params).await
         })
     }
 }
@@ -758,45 +806,131 @@ impl<'a> IntoFuture for CloneTemplateBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let (client, params) = self.into_params()?;
-            client.call_one(MODULE, "clonetemplate", params).await
+            client
+                .call_one(Verb::Post, MODULE, "clonetemplate", params)
+                .await
         })
     }
 }
 
 /// A verification template registered on the account.
 ///
-/// Kavenegar is inconsistent about the casing of these field names between
-/// endpoints, so each field accepts the documented spellings.
+/// Kavenegar returns different shapes from different endpoints: the list and
+/// get endpoints use camelCase names, add and update use lowercase names and
+/// send numbers as strings, and clone returns only `id` and `name`. Each field
+/// accepts every documented spelling, and fields an endpoint does not send
+/// are left empty.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Template {
     /// The template's numeric identifier.
-    #[serde(default, alias = "templateid")]
+    #[serde(default, alias = "templateid", deserialize_with = "lenient_i64")]
     pub id: i64,
     /// The name passed to [`VerifyService::lookup`].
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub name: String,
     /// The SMS body, including its `%token` placeholders.
-    #[serde(default, alias = "smsMessage", alias = "textmessage")]
+    #[serde(
+        default,
+        alias = "smsMessage",
+        alias = "textmessage",
+        alias = "textMessage",
+        deserialize_with = "lenient_string"
+    )]
     pub sms_message: String,
     /// The text read aloud when the template is delivered by voice call.
-    #[serde(default, alias = "callMessage", alias = "voicemessage")]
+    #[serde(
+        default,
+        alias = "callMessage",
+        alias = "voicemessage",
+        alias = "voiceMessage",
+        deserialize_with = "lenient_string"
+    )]
     pub call_message: String,
     /// The line the template sends from.
-    #[serde(default, alias = "primaryLineNumber")]
+    #[serde(
+        default,
+        alias = "primaryLineNumber",
+        alias = "primarylinenumber",
+        deserialize_with = "lenient_string"
+    )]
     pub primary_line_number: String,
     /// The line used when the primary one is unavailable.
-    #[serde(default, alias = "secondaryLineNumber")]
+    #[serde(
+        default,
+        alias = "secondaryLineNumber",
+        alias = "secondarylinenumber",
+        deserialize_with = "lenient_string"
+    )]
     pub secondary_line_number: String,
-    /// Which channel is tried first: `SMS` or `Call`.
-    #[serde(default, alias = "sendPriority")]
+    /// Which channel is tried first: `SMS` or `Call`. Sent by the list and
+    /// get endpoints.
+    #[serde(default, alias = "sendPriority", deserialize_with = "lenient_string")]
     pub send_priority: String,
+    /// The primary channel as a raw code: `1` SMS, `2` voice call. Sent by
+    /// the add and update endpoints.
+    #[serde(
+        default,
+        alias = "sendmethod",
+        alias = "sendMethod",
+        deserialize_with = "lenient_string"
+    )]
+    pub send_method: String,
+    /// The fallback channel as a raw code: `0` system default, `1` SMS, `2`
+    /// voice call, `3` disabled. Sent by the add and update endpoints.
+    #[serde(
+        default,
+        alias = "fallbackmethod",
+        alias = "fallBackMethod",
+        deserialize_with = "lenient_string"
+    )]
+    pub fallback_method: String,
+    /// Where the template is used, as a raw code: `0` website, `1` mobile
+    /// app. Sent by the add and update endpoints.
+    #[serde(
+        default,
+        alias = "sourcetype",
+        alias = "sourceType",
+        deserialize_with = "lenient_string"
+    )]
+    pub source_type: String,
+    /// The website or app address recorded for the template.
+    #[serde(
+        default,
+        alias = "sourceurl",
+        alias = "sourceUrl",
+        deserialize_with = "lenient_string"
+    )]
+    pub source_url: String,
+    /// The website or app name recorded for the template.
+    #[serde(
+        default,
+        alias = "sourcename",
+        alias = "sourceName",
+        deserialize_with = "lenient_string"
+    )]
+    pub source_name: String,
     /// How long to wait, in minutes, before falling back to the other channel.
-    #[serde(default, alias = "switchTTL", alias = "switchttL")]
+    #[serde(
+        default,
+        alias = "switchTTL",
+        alias = "switchttL",
+        alias = "switchttl",
+        deserialize_with = "lenient_i64"
+    )]
     pub switch_ttl: i64,
-    /// Where the template sits in the approval process.
-    #[serde(default, alias = "approvalStatus")]
+    /// Where the template sits in the approval process: `Approved`,
+    /// `PendingReview` or `Rejected`.
+    #[serde(default, alias = "approvalStatus", deserialize_with = "lenient_string")]
     pub approval_status: String,
+}
+
+impl Template {
+    /// Whether the template has been approved and can be used with
+    /// [`VerifyService::lookup`].
+    pub fn is_approved(&self) -> bool {
+        self.approval_status.eq_ignore_ascii_case("approved")
+    }
 }
 
 #[cfg(test)]
@@ -842,6 +976,74 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn lookup_applies_the_documented_token_rules() {
+        let c = client();
+        let check = |b: LookupBuilder<'_>| {
+            b.into_params().map(|_| ()).map_err(|e| match e {
+                Error::InvalidParameter { parameter, .. } => parameter,
+                other => panic!("unexpected {other:?}"),
+            })
+        };
+        let base = || c.verify().lookup("0912", "t", "1234");
+
+        assert_eq!(check(c.verify().lookup("0912", "t", "12_34")), Err("token"));
+        assert_eq!(
+            check(c.verify().lookup("0912", "t", "12\n34")),
+            Err("token")
+        );
+        assert_eq!(
+            check(c.verify().lookup("0912", "t", "۱".repeat(101))),
+            Err("token")
+        );
+        assert_eq!(
+            check(c.verify().lookup("0912", "t", "۱".repeat(100))),
+            Ok(())
+        );
+        assert_eq!(check(base().token2("a b")), Err("token2"));
+        assert_eq!(check(base().token3("a_b")), Err("token3"));
+        assert_eq!(check(base().token10("a b c d e f")), Ok(()));
+        assert_eq!(check(base().token10("a b c d e f g")), Err("token10"));
+        assert_eq!(check(base().token20("a b c d e f g h i")), Ok(()));
+        assert_eq!(check(base().token20("a b c d e f g h i j")), Err("token20"));
+    }
+
+    #[test]
+    fn template_decodes_every_documented_shape() {
+        // addtemplate / updatetemplate: lowercase names, numbers as strings,
+        // nulls for unset text.
+        let added: Template = serde_json::from_str(
+            r#"{"templateid":"12345","name":"LoginOtp","sourcetype":"0","sendmethod":"1",
+                "fallbackmethod":"2","primarylinenumber":"10004346",
+                "secondarylinenumber":"1000596446","switchttL":2,"sourceurl":null,
+                "sourcename":null,"textmessage":"کد ورود شما %token است",
+                "voicemessage":"کد ورود شما %token است"}"#,
+        )
+        .unwrap();
+        assert_eq!(added.id, 12345);
+        assert_eq!(added.primary_line_number, "10004346");
+        assert_eq!(added.secondary_line_number, "1000596446");
+        assert_eq!(added.send_method, "1");
+        assert_eq!(added.fallback_method, "2");
+        assert_eq!(added.switch_ttl, 2);
+        assert_eq!(added.source_url, "");
+
+        // gettemplate / templatelist: camelCase names.
+        let got: Template = serde_json::from_str(
+            r#"{"id":7,"name":"LoginOtp","smsMessage":"%token","callMessage":null,
+                "primaryLineNumber":"10004346","secondaryLineNumber":null,
+                "sendPriority":"SMS","switchTTL":null,"approvalStatus":"Approved"}"#,
+        )
+        .unwrap();
+        assert_eq!(got.id, 7);
+        assert_eq!(got.call_message, "");
+        assert!(got.is_approved());
+
+        // clonetemplate: just the id and name.
+        let cloned: Template = serde_json::from_str(r#"{"id":8,"name":"Copy"}"#).unwrap();
+        assert_eq!(cloned.id, 8);
     }
 
     #[test]

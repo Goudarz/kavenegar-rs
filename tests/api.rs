@@ -283,6 +283,195 @@ async fn template_listing_uses_templatelist() {
 }
 
 #[tokio::test]
+async fn unblocking_is_a_delete_with_a_query_and_returns_the_message() {
+    // The documented response: `entries` is an object, not a list.
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"تایید شد"},
+            "entries":{"message":"Done-removed 1 item from blacklist"}}"#,
+    )
+    .await;
+
+    let done = stub
+        .client()
+        .line()
+        .unblock("10002263", ["09121234567"])
+        .await
+        .unwrap();
+    assert_eq!(done.message, "Done-removed 1 item from blacklist");
+
+    let request = stub.last_request();
+    assert!(
+        request.starts_with(
+            "DELETE /test-key/line/blocked/remove.json?linenumber=10002263&receptor=09121234567 "
+        ),
+        "{request}"
+    );
+}
+
+#[tokio::test]
+async fn the_existence_check_is_a_get() {
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"تایید شد"},
+            "entries":[{"linenumber":"123456","receptor":"09224445555","status":"NotExists"}]}"#,
+    )
+    .await;
+
+    let found = stub
+        .client()
+        .line()
+        .is_blocked("123456", ["09224445555"])
+        .await
+        .unwrap();
+    assert_eq!(found[0].status, BlockedState::NotExists);
+
+    let request = stub.last_request();
+    assert!(
+        request.starts_with(
+            "GET /test-key/line/blocked/exists.json?linenumber=123456&receptor=09224445555 "
+        ),
+        "{request}"
+    );
+}
+
+#[tokio::test]
+async fn media_lookups_use_the_documented_verbs() {
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"ok"},
+            "entries":{"id":"3fa85f64-5717-4562-b3fc-2c963f66afa6","deleted":true}}"#,
+    )
+    .await;
+    let client = stub.client();
+
+    client.media().get("3fa85f64").await.unwrap();
+    assert!(
+        stub.last_request()
+            .starts_with("GET /test-key/media/get.json?id=3fa85f64 "),
+        "{}",
+        stub.last_request()
+    );
+
+    let gone = client.media().delete("3fa85f64").await.unwrap();
+    assert!(gone.deleted);
+    assert!(
+        stub.last_request()
+            .starts_with("DELETE /test-key/media/delete.json?id=3fa85f64 "),
+        "{}",
+        stub.last_request()
+    );
+}
+
+#[tokio::test]
+async fn reading_the_config_is_a_get_and_decodes_the_documented_payload() {
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"تایید شد"},
+            "entries":{"apilogs":"justfaults","dailyreport":"disabled","debugmode":"enabled",
+                       "defaultsender":"10004535","mincreditalarm":"50000","resendfailed":"true"}}"#,
+    )
+    .await;
+
+    let config = stub.client().account().config().await.unwrap();
+    assert_eq!(config.min_credit_alarm, 50000);
+    assert!(
+        stub.last_request()
+            .starts_with("GET /test-key/account/config.json "),
+        "{}",
+        stub.last_request()
+    );
+}
+
+#[tokio::test]
+async fn adding_a_template_decodes_the_documented_response() {
+    // addtemplate answers with lowercase names and the id as a string.
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"تایید شد"},
+            "entries":{"templateid":"12345","name":"LoginOtp","sourcetype":"0",
+                       "sendmethod":"1","fallbackmethod":"2","primarylinenumber":"10004346",
+                       "secondarylinenumber":"1000596446","switchttL":2,"sourceurl":null,
+                       "sourcename":null,"textmessage":"کد ورود شما %token است",
+                       "voicemessage":"کد ورود شما %token است"}}"#,
+    )
+    .await;
+
+    let template = stub
+        .client()
+        .verify()
+        .add_template(
+            "LoginOtp",
+            kavenegar::SourceType::Website,
+            kavenegar::SendMethod::Sms,
+        )
+        .text_message("کد ورود شما %token است")
+        .await
+        .unwrap();
+
+    assert_eq!(template.id, 12345);
+    assert_eq!(template.primary_line_number, "10004346");
+    assert_eq!(template.switch_ttl, 2);
+}
+
+#[tokio::test]
+async fn send_array_posts_json_arrays_and_documented_names() {
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"تایید شد"},"entries":[]}"#,
+    )
+    .await;
+
+    stub.client()
+        .sms()
+        .send_array(["09121111111", "09122222222"], ["a", "b"])
+        .sender("30002626")
+        .local_ids([10, 11])
+        .await
+        .unwrap();
+
+    let request = stub.last_request();
+    assert!(
+        request.starts_with("POST /test-key/sms/sendarray.json "),
+        "{request}"
+    );
+    // Form-encoded `["09121111111","09122222222"]` and `[10,11]`.
+    assert!(
+        request.contains("receptor=%5B%2209121111111%22%2C%2209122222222%22%5D"),
+        "{request}"
+    );
+    assert!(
+        request.contains("localmessageids=%5B10%2C11%5D"),
+        "{request}"
+    );
+}
+
+#[tokio::test]
+async fn inbox_records_carry_no_delivery_status() {
+    let stub = Stub::start(
+        "200 OK",
+        r#"{"return":{"status":200,"message":"تایید شد"},
+            "entries":[{"messageid":35850015,"message":"سلام","sender":"09121234567",
+                        "receptor":"3000202030","date":1357206241}],
+            "metadata":{"totalcount":"1","currentpage":"1","totalpages":"1","pagesize":"200"}}"#,
+    )
+    .await;
+
+    let page = stub
+        .client()
+        .sms()
+        .inbox_paged("3000202030")
+        .unread()
+        .await
+        .unwrap();
+
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.page_size, 200);
+    assert_eq!(page[0].status, MessageStatus::Unknown);
+    assert_eq!(page.next_page(), None);
+}
+
+#[tokio::test]
 async fn an_unknown_status_code_still_surfaces_as_an_api_error() {
     let stub = Stub::start(
         "200 OK",

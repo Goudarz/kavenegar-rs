@@ -4,7 +4,8 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::{BoxFuture, Kavenegar};
+use crate::client::{BoxFuture, Kavenegar, Verb};
+use crate::de::{lenient_i64, lenient_string};
 use crate::error::Result;
 
 const MODULE: &str = "account";
@@ -30,15 +31,21 @@ impl<'a> AccountService<'a> {
     /// # }
     /// ```
     pub async fn info(self) -> Result<AccountInfo> {
-        self.client.call_one(MODULE, "info", Vec::new()).await
+        self.client
+            .call_one(Verb::Post, MODULE, "info", Vec::new())
+            .await
     }
 
     /// Reads the current account settings, changing nothing.
     pub async fn config(self) -> Result<AccountConfig> {
-        self.client.call_one(MODULE, "config", Vec::new()).await
+        // Documented as a parameterless GET.
+        self.client
+            .call_one(Verb::Get, MODULE, "config", Vec::new())
+            .await
     }
 
-    /// Updates account settings. Only the fields you set are sent.
+    /// Updates account settings. Only the fields you set are sent, and the
+    /// full settings are returned as they stand afterwards.
     ///
     /// ```no_run
     /// # use kavenegar::Toggle;
@@ -65,13 +72,14 @@ impl<'a> AccountService<'a> {
 #[non_exhaustive]
 pub struct AccountInfo {
     /// Remaining credit in Rials.
-    #[serde(rename = "remaincredit", default)]
+    #[serde(rename = "remaincredit", default, deserialize_with = "lenient_i64")]
     pub remaining_credit: i64,
-    /// Account expiry, as a Unix timestamp.
-    #[serde(rename = "expiredate", default)]
+    /// Account expiry, as a Unix timestamp. Kavenegar describes this as a
+    /// security measure for sub-accounts, not a deadline to act on.
+    #[serde(rename = "expiredate", default, deserialize_with = "lenient_i64")]
     pub expire_date: i64,
-    /// Account tier, for example `master`.
-    #[serde(rename = "type", default)]
+    /// Account tier: `master` or `child`.
+    #[serde(rename = "type", default, deserialize_with = "lenient_string")]
     pub account_type: String,
 }
 
@@ -79,23 +87,24 @@ pub struct AccountInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct AccountConfig {
-    /// API logging mode.
-    #[serde(rename = "apilogs", default)]
+    /// API logging mode: `enabled`, `disabled` or `justfaults`.
+    #[serde(rename = "apilogs", default, deserialize_with = "lenient_string")]
     pub api_logs: String,
     /// Daily report mode.
-    #[serde(rename = "dailyreport", default)]
+    #[serde(rename = "dailyreport", default, deserialize_with = "lenient_string")]
     pub daily_report: String,
-    /// Debug mode.
-    #[serde(rename = "debugmode", default)]
+    /// Debug mode. While enabled, sends are accepted but never delivered.
+    #[serde(rename = "debugmode", default, deserialize_with = "lenient_string")]
     pub debug_mode: String,
     /// The line used when a send omits a sender.
-    #[serde(rename = "defaultsender", default)]
+    #[serde(rename = "defaultsender", default, deserialize_with = "lenient_string")]
     pub default_sender: String,
     /// Credit threshold, in Rials, that triggers an alert.
-    #[serde(rename = "mincreditalarm", default)]
+    #[serde(rename = "mincreditalarm", default, deserialize_with = "lenient_i64")]
     pub min_credit_alarm: i64,
-    /// Whether failed messages are resent automatically.
-    #[serde(rename = "resendfailed", default)]
+    /// Whether undelivered messages are resent automatically. The API has
+    /// been seen to report this as `true` as well as `enabled`.
+    #[serde(rename = "resendfailed", default, deserialize_with = "lenient_string")]
     pub resend_failed: String,
 }
 
@@ -142,7 +151,8 @@ impl<'a> UpdateConfigBuilder<'a> {
         self
     }
 
-    /// Controls debug mode.
+    /// Controls debug mode. While enabled, sends are accepted and charged
+    /// nothing, but no message is delivered — useful for testing your code.
     pub fn debug_mode(mut self, value: Toggle) -> Self {
         self.params.push(("debugmode", value.as_str().to_owned()));
         self
@@ -173,7 +183,11 @@ impl<'a> IntoFuture for UpdateConfigBuilder<'a> {
     type IntoFuture = BoxFuture<'a, Result<AccountConfig>>;
 
     fn into_future(self) -> Self::IntoFuture {
-        Box::pin(async move { self.client.call_one(MODULE, "config", self.params).await })
+        Box::pin(async move {
+            self.client
+                .call_one(Verb::Post, MODULE, "config", self.params)
+                .await
+        })
     }
 }
 
@@ -193,6 +207,19 @@ mod tests {
         assert_eq!(builder.params.len(), 2);
         assert_eq!(builder.params[0], ("defaultsender", "10004346".to_owned()));
         assert_eq!(builder.params[1], ("dailyreport", "justfaults".to_owned()));
+    }
+
+    #[test]
+    fn config_decodes_the_documented_payload() {
+        // The documented example sends `mincreditalarm` as a string.
+        let config: AccountConfig = serde_json::from_str(
+            r#"{"apilogs":"justfaults","dailyreport":"disabled","debugmode":"enabled",
+                "defaultsender":"10004535","mincreditalarm":"50000","resendfailed":"true"}"#,
+        )
+        .unwrap();
+        assert_eq!(config.min_credit_alarm, 50000);
+        assert_eq!(config.default_sender, "10004535");
+        assert_eq!(config.resend_failed, "true");
     }
 
     #[test]

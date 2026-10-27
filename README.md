@@ -10,6 +10,13 @@ voice-call API.
 
 **[راهنمای فارسی →](README.fa.md)**
 
+> [!WARNING]
+> **This crate is under active development.** The API may change between
+> `0.x` releases, and not every endpoint has been exercised against a live
+> Kavenegar account yet. If a response fails to decode, please
+> [open an issue](https://github.com/goudarz/kavenegar-rs/issues) with the raw
+> body — `Error::Decode` includes it.
+
 - All 32 endpoints from the [REST docs](https://kavenegar.com/rest.html)
 - Typed status codes that never break when Kavenegar adds a new one
 - Mistakes caught before you spend a request
@@ -109,6 +116,14 @@ let sent = client
     .tag("signup")               // groups it in your reports
     .await?;
 
+// Media on a messenger line, or a sending policy instead of one line.
+let sent = client
+    .sms()
+    .send(["09177788155"], "Your invoice")
+    .media_id(&media.id)         // from client.media().upload(..)
+    .policy("night-flow")        // a sending policy defined in your panel
+    .await?;
+
 // A different message per recipient, in one call.
 let sent = client
     .sms()
@@ -145,7 +160,7 @@ let sent = client
     .verify()
     .lookup("09177788155", "order-shipped", "48391")
     .token2("Shiraz")
-    .token10("Goudarz Jafari")     // token10 and token20 allow spaces
+    .token10("Goudarz Jafari")     // token10 allows 5 spaces, token20 allows 8
     .await?;
 ```
 
@@ -188,7 +203,6 @@ for m in statuses {
 let calls = client
     .call()
     .text_to_speech(["09177788155"], "Your order has shipped")
-    .repeat(2)   // repeats the message during the call
     .await?;
 ```
 
@@ -202,10 +216,11 @@ println!("{} Rials remaining", info.remaining_credit);
 ### Receiving messages
 
 ```rust
-// Reads unread messages and marks them read. Each message comes back once.
+// Reads up to 100 unread messages and marks them read, so each comes back once.
 let received = client.sms().receive("3000202030").await?;
 
-// Reads without consuming, so a crash mid-batch loses nothing.
+// The same, 200 per page, with a date window and page counters.
+// This marks what it returns as read too.
 let page = client.sms().inbox_paged("3000202030").unread().await?;
 ```
 
@@ -217,8 +232,9 @@ so every method here takes the line number first.
 ```rust
 let page = client.line().blocked("10004346").await?;
 
-let results = client.line().block("10004346", ["09177788155"]).await?;
-let results = client.line().unblock("10004346", ["09177788155"]).await?;
+let results = client.line().block("10004346", ["09177788155"]).await?;   // up to 200
+let done = client.line().unblock("10004346", ["09177788155"]).await?;    // up to 50
+println!("{}", done.message);
 
 let results = client.line().is_blocked("10004346", ["09177788155"]).await?;
 if results[0].status.is_blocked() {
@@ -324,7 +340,7 @@ loop {
     }
 
     let Some(next) = page.next_page() else { break };
-    page = client.verify().templates().page(next as u32).await?;
+    page = client.verify().templates().page(next).await?;
 }
 ```
 
@@ -462,7 +478,9 @@ than a header. A URL travels further than a header does, so this crate:
 - **Refuses plain HTTP** to non-loopback hosts, so a misconfigured `base_url`
   cannot put the key on the wire in clear text.
 - **Never follows redirects**, which would hand the path — and the key in it —
-  to a host the server chooses.
+  to a host the server chooses. If you pass your own client through
+  `ClientBuilder::http_client`, that one is used as-is: build it with
+  `.redirect(reqwest::redirect::Policy::none())`.
 - **Caps response bodies at 8 MiB while streaming**, so a reply with no
   declared length cannot exhaust memory.
 
@@ -482,18 +500,22 @@ The full policy, threat model, and reporting address are in
   `chrono`, `jiff`, or anything else if you want calendar types; this crate
   adds no date dependency. `client.utils().server_time()` reads Kavenegar's own clock.
 - **Costs** are in Rials.
-- **`sms().receive()` consumes messages** — a second call will not return the
-  same ones. Use `sms().inbox_paged()` if you would rather read without
-  consuming.
+- **Reading the inbox marks messages read.** Both `sms().receive()` and
+  `sms().inbox_paged()` mark what they return as read, so asking for unread
+  messages twice will not return the same ones. Store them before you process
+  them.
 - **`select`, `select_outbox` and `latest_outbox`** need an IP allowlist entry
   in your panel, or they fail with `ApiStatus::AccessDenied`.
 - **Trial accounts** can only send to their own owner's number.
 - **A new account must finish identity verification** (احراز هویت) in the
   panel. Until it does, every endpoint returns `ApiStatus::AccountNotVerified`,
   including free ones like `server_time`.
-- **Tokens must not contain spaces.** Kavenegar splits on whitespace and would
-  silently truncate the message, so this crate rejects it up front. Use
-  `token10` or `token20` for values with spaces.
+- **Lookup tokens have rules.** Each is at most 100 characters and may not
+  contain a newline or an underscore. `token`, `token2` and `token3` may not
+  contain spaces; `token10` allows 5 and `token20` allows 8. Kavenegar answers
+  a broken rule with error 431, so this crate rejects it before sending.
+- **Local ids are numbers.** Kavenegar documents them as integers, so
+  `local_ids` takes `i64`. A repeated local id is not sent twice.
 
 ## License
 
@@ -501,3 +523,6 @@ This project is released under the [MIT License](LICENSE).
 
 This is an unofficial, open-source client and has no official affiliation with
 Kavenegar.
+
+Maintained by **Goudarz Jafari** — [hi@goudarzjafari.com](mailto:hi@goudarzjafari.com).
+Source and issues: <https://github.com/goudarz/kavenegar-rs>.

@@ -46,7 +46,10 @@ travels further than a header does. The crate therefore:
   in clear text by a misconfigured `base_url`. Loopback stays allowed so local
   mock servers work.
 - **Does not follow redirects.** A `Location` header would otherwise hand the
-  path — and the key in it — to a host of the server's choosing.
+  path — and the key in it — to a host of the server's choosing. This applies
+  to the client the crate builds; a client you supply through
+  `ClientBuilder::http_client` is used as-is, so configure it with
+  `redirect::Policy::none()` yourself.
 
 What this crate cannot do for you: the key is still in the URL on the wire
 inside the TLS session, and it will appear in Kavenegar's own server logs and
@@ -60,8 +63,10 @@ that learns your key.
   declared length cannot exhaust memory.
 - A 30-second overall timeout and a 10-second connect timeout are set by
   default.
-- Batch-size limits documented by Kavenegar (200 recipients for blocked-list
-  calls, matching array lengths for `send_array`) are enforced locally.
+- Batch-size limits documented by Kavenegar are enforced locally: 200
+  recipients per send, `send_array`, voice call, block or existence check; 50
+  per unblock; 500 message ids per status, select or cancel; and matching
+  array lengths for `send_array`.
 
 ### Personal data in errors
 

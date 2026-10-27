@@ -2,11 +2,17 @@
 
 use std::future::IntoFuture;
 
-use crate::client::{BoxFuture, Kavenegar};
+use crate::client::{BoxFuture, Kavenegar, Verb};
 use crate::error::{Error, Result};
 use crate::models::Message;
 
 const MODULE: &str = "call";
+
+/// The most recipients Kavenegar accepts in one call request.
+const MAX_RECIPIENTS: usize = 200;
+
+/// The most redial attempts Kavenegar documents for an unanswered call.
+const MAX_REPEAT: u8 = 5;
 
 /// Entry point for the `call` endpoints, from [`Kavenegar::call`].
 #[derive(Debug, Clone, Copy)]
@@ -19,14 +25,14 @@ impl<'a> CallService<'a> {
         Self { client }
     }
 
-    /// Places a call that reads the given text aloud.
+    /// Places a call that reads the given text aloud, to up to 200
+    /// recipients.
     ///
     /// ```no_run
     /// # async fn run(client: kavenegar::Kavenegar) -> Result<(), kavenegar::Error> {
     /// let calls = client
     ///     .call()
     ///     .text_to_speech(["09177788155"], "سفارش شما ارسال شد")
-    ///     .repeat(2)
     ///     .await?;
     /// # Ok(())
     /// # }
@@ -68,19 +74,25 @@ impl<'a> TextToSpeechBuilder<'a> {
         self
     }
 
-    /// Attaches your own identifiers, one per recipient.
+    /// Attaches your own identifiers, one per recipient. A repeated id is
+    /// treated as a duplicate and not called again.
     pub fn local_ids(mut self, local_ids: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.local_ids = local_ids.into_iter().map(Into::into).collect();
         self
     }
 
-    /// Repeats the message during the call. Kavenegar allows up to 3 replays.
+    /// Redials an unanswered call up to this many times, 0 to 5, three
+    /// minutes apart.
+    ///
+    /// Kavenegar documents this parameter as currently disabled, so it is
+    /// sent but may have no effect.
     pub fn repeat(mut self, times: u8) -> Self {
         self.repeat = Some(times);
         self
     }
 
-    /// Tags the call, for grouping in reports.
+    /// Tags the call, for grouping in reports. The tag must already exist in
+    /// your panel.
     pub fn tag(mut self, tag: impl Into<String>) -> Self {
         self.tag = Some(tag.into());
         self
@@ -91,6 +103,15 @@ impl<'a> TextToSpeechBuilder<'a> {
             return Err(Error::invalid(
                 "receptors",
                 "at least one recipient is required",
+            ));
+        }
+        if self.receptors.len() > MAX_RECIPIENTS {
+            return Err(Error::invalid(
+                "receptors",
+                format!(
+                    "at most {MAX_RECIPIENTS} recipients per call, got {}",
+                    self.receptors.len()
+                ),
             ));
         }
         if self.message.trim().is_empty() {
@@ -107,9 +128,12 @@ impl<'a> TextToSpeechBuilder<'a> {
             ));
         }
         if let Some(repeat) = self.repeat
-            && repeat > 3
+            && repeat > MAX_REPEAT
         {
-            return Err(Error::invalid("repeat", "must be 3 or fewer"));
+            return Err(Error::invalid(
+                "repeat",
+                format!("must be {MAX_REPEAT} or fewer"),
+            ));
         }
 
         let mut params = vec![
@@ -139,7 +163,9 @@ impl<'a> IntoFuture for TextToSpeechBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             let (client, params) = self.into_params()?;
-            client.call_list(MODULE, "maketts", params).await
+            client
+                .call_list(Verb::Post, MODULE, "maketts", params)
+                .await
         })
     }
 }
@@ -149,12 +175,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repeat_is_capped_at_three() {
+    fn repeat_is_capped_at_five() {
         let c = Kavenegar::new("test-key");
+        assert!(
+            c.call()
+                .text_to_speech(["0912"], "hello")
+                .repeat(5)
+                .into_params()
+                .is_ok()
+        );
         let err = c
             .call()
             .text_to_speech(["0912"], "hello")
-            .repeat(4)
+            .repeat(6)
             .into_params()
             .unwrap_err();
         assert!(matches!(

@@ -10,7 +10,8 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::client::{BoxFuture, Kavenegar};
+use crate::client::{BoxFuture, Kavenegar, Verb};
+use crate::de::{lenient_bool, lenient_i64, lenient_string};
 use crate::error::{Error, Result};
 use crate::page::Page;
 
@@ -70,14 +71,18 @@ impl<'a> MediaService<'a> {
     /// Fetches one media file's details by its identifier.
     pub async fn get(self, id: impl Into<String>) -> Result<Media> {
         let id = non_empty_id(id)?;
-        self.client.call_one(MODULE, "get", vec![("id", id)]).await
+        // Documented as an HTTP GET.
+        self.client
+            .call_one(Verb::Get, MODULE, "get", vec![("id", id)])
+            .await
     }
 
     /// Deletes a media file permanently.
     pub async fn delete(self, id: impl Into<String>) -> Result<MediaDeletion> {
         let id = non_empty_id(id)?;
+        // Documented as an HTTP DELETE.
         self.client
-            .call_one(MODULE, "delete", vec![("id", id)])
+            .call_one(Verb::Delete, MODULE, "delete", vec![("id", id)])
             .await
     }
 }
@@ -172,7 +177,11 @@ impl<'a> IntoFuture for MediaListBuilder<'a> {
 
             // `media/list` nests its own pagination inside `entries`, rather
             // than using the `metadata` block the other endpoints use.
-            let listing: MediaListing = self.client.call_one(MODULE, "list", params).await?;
+            // Documented as an HTTP GET.
+            let listing: MediaListing = self
+                .client
+                .call_one(Verb::Get, MODULE, "list", params)
+                .await?;
             Ok(listing.into_page())
         })
     }
@@ -181,14 +190,19 @@ impl<'a> IntoFuture for MediaListBuilder<'a> {
 /// The `entries` payload of `media/list`.
 #[derive(Debug, Deserialize)]
 struct MediaListing {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     page: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     size: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     total: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_list")]
     list: Vec<Media>,
+}
+
+/// Reads a list that may arrive as `null`.
+fn null_list<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<Media>, D::Error> {
+    Ok(Option::<Vec<Media>>::deserialize(d)?.unwrap_or_default())
 }
 
 impl MediaListing {
@@ -218,33 +232,34 @@ impl MediaListing {
 #[non_exhaustive]
 pub struct Media {
     /// The file's unique identifier, a GUID.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub id: String,
     /// The file name.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub name: String,
     /// The file's MIME type.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub mime_type: String,
     /// The file extension, without a leading dot.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub extension: String,
     /// Size in bytes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub size: i64,
     /// Duration in seconds; `0` for images.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub duration: i64,
     /// Pixel dimensions, such as `1800x600`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub resolution: String,
     /// How far along the file's processing is.
     #[serde(default)]
     pub status: MediaStatus,
     /// The Persian description of `status`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub status_desc: String,
-    /// The moderation outcome, once the file has been reviewed.
+    /// The moderation outcome, once the file has been reviewed. `media/get`
+    /// does not send this.
     #[serde(default)]
     pub review: Option<MediaReview>,
 }
@@ -254,16 +269,16 @@ pub struct Media {
 #[non_exhaustive]
 pub struct MediaReview {
     /// `1` when approved, `2` when rejected.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub status: i64,
     /// The Persian description of `status`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub status_desc: String,
     /// A code explaining the decision.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub reason: i64,
     /// The Persian description of `reason`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub reason_desc: String,
 }
 
@@ -319,7 +334,7 @@ impl From<i64> for MediaStatus {
 
 impl<'de> Deserialize<'de> for MediaStatus {
     fn deserialize<D: Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
-        Ok(MediaStatus::from(i64::deserialize(d)?))
+        Ok(MediaStatus::from(lenient_i64(d)?))
     }
 }
 
@@ -328,10 +343,10 @@ impl<'de> Deserialize<'de> for MediaStatus {
 #[non_exhaustive]
 pub struct MediaDeletion {
     /// The identifier that was deleted.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub id: String,
     /// Whether the file is now gone.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_bool")]
     pub deleted: bool,
 }
 
@@ -346,10 +361,9 @@ fn non_empty_id(id: impl Into<String>) -> Result<String> {
 /// Maps the extensions Kavenegar accepts to their MIME types.
 fn guess_mime(file_name: &str) -> &'static str {
     let extension = file_name
-        .rsplit('.')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .unwrap_or_default();
 
     match extension.as_str() {
         "jpg" | "jpeg" => "image/jpeg",
@@ -370,6 +384,8 @@ mod tests {
         assert_eq!(guess_mime("clip.mp4"), "video/mp4");
         assert_eq!(guess_mime("art.gif"), "image/gif");
         assert_eq!(guess_mime("notes.txt"), "application/octet-stream");
+        // A bare name is not an extension.
+        assert_eq!(guess_mime("jpg"), "application/octet-stream");
     }
 
     #[test]
@@ -386,6 +402,21 @@ mod tests {
         assert_eq!(media.size, 2048576);
         assert!(media.status.is_ready());
         assert!(media.review.unwrap().is_approved());
+    }
+
+    #[test]
+    fn media_tolerates_nulls_and_quoted_numbers() {
+        let json = r#"{"id":"abc","name":"clip.mp4","mime_type":"video/mp4",
+                       "extension":"mp4","size":"2048","duration":12,"resolution":null,
+                       "status":"0","status_desc":null}"#;
+        let media: Media = serde_json::from_str(json).unwrap();
+        assert_eq!(media.size, 2048);
+        assert_eq!(media.resolution, "");
+        assert_eq!(media.status, MediaStatus::Processing);
+        assert!(media.review.is_none());
+
+        let gone: MediaDeletion = serde_json::from_str(r#"{"id":"abc","deleted":"true"}"#).unwrap();
+        assert!(gone.deleted);
     }
 
     #[test]

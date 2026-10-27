@@ -173,11 +173,12 @@ impl Kavenegar {
     #[cfg(any(feature = "sms", feature = "call", feature = "line"))]
     pub(crate) async fn call_list<T: DeserializeOwned>(
         &self,
+        verb: Verb,
         module: &str,
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<Vec<T>> {
-        let (entries, _, body) = self.request(module, method, params).await?;
+        let (entries, _, body) = self.request(verb, module, method, params).await?;
         match entries {
             Value::Null => Ok(Vec::new()),
             Value::Array(_) => {
@@ -195,39 +196,31 @@ impl Kavenegar {
         feature = "sms",
         feature = "verify",
         feature = "account",
+        feature = "line",
         feature = "media",
         feature = "utils"
     ))]
     pub(crate) async fn call_one<T: DeserializeOwned>(
         &self,
+        verb: Verb,
         module: &str,
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<T> {
-        let (entries, _, body) = self.request(module, method, params).await?;
-        let value = match entries {
-            // ...and some wrap a single result in a one-element array.
-            Value::Array(mut items) if items.len() == 1 => items.remove(0),
-            Value::Null => {
-                return Err(Error::MissingEntries {
-                    method: method.to_owned(),
-                    body,
-                });
-            }
-            other => other,
-        };
-        serde_json::from_value(value).map_err(|source| Error::Decode { source, body })
+        let (entries, _, body) = self.request(verb, module, method, params).await?;
+        decode_single(method, entries, body)
     }
 
     /// Runs a request whose payload is not needed, only its success.
     #[cfg(feature = "verify")]
     pub(crate) async fn call_discard(
         &self,
+        verb: Verb,
         module: &str,
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<()> {
-        self.request(module, method, params).await.map(|_| ())
+        self.request(verb, module, method, params).await.map(|_| ())
     }
 
     /// Runs a paginated request, pairing the records with the `metadata`
@@ -235,11 +228,12 @@ impl Kavenegar {
     #[cfg(any(feature = "sms", feature = "verify", feature = "line"))]
     pub(crate) async fn call_page<T: DeserializeOwned>(
         &self,
+        verb: Verb,
         module: &str,
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<Page<T>> {
-        let (entries, metadata, body) = self.request(module, method, params).await?;
+        let (entries, metadata, body) = self.request(verb, module, method, params).await?;
 
         let items: Vec<T> = match entries {
             Value::Null => Vec::new(),
@@ -292,18 +286,7 @@ impl Kavenegar {
             .await
             .map_err(|e| Error::transport(e, &self.inner.api_key))?;
         let (entries, _, body) = self.unwrap_envelope(response).await?;
-
-        let value = match entries {
-            Value::Array(mut items) if items.len() == 1 => items.remove(0),
-            Value::Null => {
-                return Err(Error::MissingEntries {
-                    method: method.to_owned(),
-                    body,
-                });
-            }
-            other => other,
-        };
-        serde_json::from_value(value).map_err(|source| Error::Decode { source, body })
+        decode_single(method, entries, body)
     }
 
     /// Builds the URL for one endpoint.
@@ -320,19 +303,24 @@ impl Kavenegar {
     /// came from, so callers can attach the body to a decode failure.
     async fn request(
         &self,
+        verb: Verb,
         module: &str,
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<(Value, Value, String)> {
         let url = self.endpoint(module, method);
+        let http = &self.inner.http;
 
-        // POST with a form body: Persian text and long messages do not
-        // survive a query string reliably.
-        let response = self
-            .inner
-            .http
-            .post(&url)
-            .form(&params)
+        // POST carries a form body, which is where message text belongs:
+        // Persian text and long messages do not survive a query string
+        // reliably. GET and DELETE are used only where Kavenegar documents
+        // that verb, and their parameters are short identifiers.
+        let request = match verb {
+            Verb::Post => http.post(&url).form(&params),
+            Verb::Get => http.get(&url).query(&params),
+            Verb::Delete => http.delete(&url).query(&params),
+        };
+        let response = request
             .send()
             .await
             .map_err(|e| Error::transport(e, &self.inner.api_key))?;
@@ -422,6 +410,61 @@ impl std::fmt::Debug for Kavenegar {
     }
 }
 
+/// The HTTP verb an endpoint is called with.
+///
+/// Kavenegar's older endpoints accept GET or POST interchangeably; the newer
+/// ones (`line/blocked/*`, `media/*`, reading `account/config`) document one
+/// specific verb, and that verb is used for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Verb {
+    #[cfg_attr(
+        not(any(feature = "account", feature = "line", feature = "media")),
+        allow(dead_code)
+    )]
+    Get,
+    // `media` alone posts only through the multipart upload path.
+    #[cfg_attr(
+        not(any(
+            feature = "sms",
+            feature = "verify",
+            feature = "call",
+            feature = "account",
+            feature = "line",
+            feature = "utils"
+        )),
+        allow(dead_code)
+    )]
+    Post,
+    #[cfg_attr(not(any(feature = "line", feature = "media")), allow(dead_code))]
+    Delete,
+}
+
+/// Decodes an `entries` value that should hold exactly one record.
+///
+/// Some endpoints send that record as a bare object and others wrap it in a
+/// one-element array, so both are accepted.
+#[cfg(any(
+    feature = "sms",
+    feature = "verify",
+    feature = "account",
+    feature = "line",
+    feature = "media",
+    feature = "utils"
+))]
+fn decode_single<T: DeserializeOwned>(method: &str, entries: Value, body: String) -> Result<T> {
+    let value = match entries {
+        Value::Array(mut items) if items.len() == 1 => items.remove(0),
+        Value::Null => {
+            return Err(Error::MissingEntries {
+                method: method.to_owned(),
+                body,
+            });
+        }
+        other => other,
+    };
+    serde_json::from_value(value).map_err(|source| Error::Decode { source, body })
+}
+
 /// The response envelope every Kavenegar endpoint wraps its payload in.
 #[derive(Deserialize)]
 struct Envelope {
@@ -500,6 +543,14 @@ impl ClientBuilder {
 
     /// Supplies a pre-configured [`reqwest::Client`], so the connection pool,
     /// proxy and TLS settings can be shared with the rest of your application.
+    ///
+    /// # Security
+    ///
+    /// That client is used as-is, so the protections this crate sets on its
+    /// own client do not apply to it. In particular, `reqwest` follows
+    /// redirects by default, and a redirect hands the request path — which
+    /// contains the API key — to whatever host it names. Build yours with
+    /// `.redirect(reqwest::redirect::Policy::none())`.
     pub fn http_client(mut self, http: reqwest::Client) -> Self {
         self.http = Some(http);
         self
@@ -571,7 +622,8 @@ fn check_base_url(base_url: &str) -> Result<()> {
         "http" if loopback => Ok(()),
         "http" => Err(Error::invalid(
             "base_url",
-            "refusing plain HTTP to a non-loopback host: the API key travels              in the URL path and would be sent in clear text",
+            "refusing plain HTTP to a non-loopback host: the API key travels \
+             in the URL path and would be sent in clear text",
         )),
         other => Err(Error::invalid(
             "base_url",

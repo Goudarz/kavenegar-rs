@@ -68,8 +68,9 @@ and a code in the body, so `Error::Api` is what you match on.
 bad key or an empty balance.
 
 **Mistakes caught before you pay for them.** Mismatched recipient and message
-lists, tokens containing spaces, invalid template names, and over-long
-blocked-list batches are all rejected locally.
+lists, batches over the documented per-call limits, tokens that break
+Kavenegar's rules, invalid template names, and date windows that end before
+they start are all rejected locally.
 
 **Pagination that walks itself.** Listing calls return a `Page<T>` that
 behaves like a slice and carries `next_page()`.

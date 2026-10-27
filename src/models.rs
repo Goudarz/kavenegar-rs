@@ -6,48 +6,59 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::de::{lenient_i64, lenient_opt_string, lenient_string};
+
 /// A single message record, as returned by send, status and inbox methods.
 ///
 /// Not every endpoint fills every field: `status.json` returns only the
-/// identifier and status, so the remaining fields fall back to their
-/// defaults rather than failing to decode.
+/// identifier and status, and the inbox endpoints return no status at all, so
+/// missing fields fall back to their defaults rather than failing to decode.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Message {
     /// Kavenegar's identifier for the message.
-    #[serde(rename = "messageid", default)]
+    #[serde(rename = "messageid", default, deserialize_with = "lenient_i64")]
     pub message_id: i64,
 
     /// The message body. Empty on endpoints that do not echo it back.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub message: String,
 
-    /// Delivery state.
+    /// Delivery state. [`MessageStatus::Unknown`] on endpoints that report
+    /// none, such as the inbox.
     #[serde(default)]
     pub status: MessageStatus,
 
     /// The Persian description of `status`, as sent by the API.
-    #[serde(rename = "statustext", default)]
+    #[serde(rename = "statustext", default, deserialize_with = "lenient_string")]
     pub status_text: String,
 
     /// The line the message was sent from.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub sender: String,
 
     /// The recipient number.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_string")]
     pub receptor: String,
 
     /// Send time, as a Unix timestamp in seconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub date: i64,
 
     /// Cost in Rials.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_i64")]
     pub cost: i64,
 
     /// Your own identifier, echoed back by the local-id endpoints.
-    #[serde(rename = "localid", default, skip_serializing_if = "Option::is_none")]
+    ///
+    /// Kept as text because the API sends it as a string on some endpoints and
+    /// a number on others.
+    #[serde(
+        rename = "localid",
+        default,
+        deserialize_with = "lenient_opt_string",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub local_id: Option<String>,
 }
 
@@ -58,8 +69,11 @@ pub struct Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum MessageStatus {
-    /// Queued for sending (1).
+    /// The response carried no status (0). This is what inbox records hold,
+    /// since a received message has no delivery state.
     #[default]
+    Unknown,
+    /// Queued for sending (1).
     Queued,
     /// Scheduled for a future time (2).
     Scheduled,
@@ -77,7 +91,7 @@ pub enum MessageStatus {
     Canceled,
     /// Blocked; the recipient opted out (14).
     Blocked,
-    /// An incoming message (50).
+    /// An incoming message (50). Not in the current published table.
     Received,
     /// The message id was not valid (100).
     Invalid,
@@ -89,6 +103,7 @@ impl MessageStatus {
     /// The numeric code as sent by the API.
     pub fn code(self) -> i64 {
         match self {
+            MessageStatus::Unknown => 0,
             MessageStatus::Queued => 1,
             MessageStatus::Scheduled => 2,
             MessageStatus::SentToCenter => 4,
@@ -136,6 +151,7 @@ impl MessageStatus {
 impl From<i64> for MessageStatus {
     fn from(code: i64) -> Self {
         match code {
+            0 => MessageStatus::Unknown,
             1 => MessageStatus::Queued,
             2 => MessageStatus::Scheduled,
             4 => MessageStatus::SentToCenter,
@@ -160,7 +176,7 @@ impl From<MessageStatus> for i64 {
 
 impl<'de> Deserialize<'de> for MessageStatus {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(MessageStatus::from(i64::deserialize(d)?))
+        Ok(MessageStatus::from(lenient_i64(d)?))
     }
 }
 
@@ -173,6 +189,7 @@ impl Serialize for MessageStatus {
 impl std::fmt::Display for MessageStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
+            MessageStatus::Unknown => "unknown",
             MessageStatus::Queued => "queued",
             MessageStatus::Scheduled => "scheduled",
             MessageStatus::SentToCenter => "sent to center",
@@ -184,7 +201,7 @@ impl std::fmt::Display for MessageStatus {
             MessageStatus::Blocked => "blocked",
             MessageStatus::Received => "received",
             MessageStatus::Invalid => "invalid",
-            MessageStatus::Other(_) => "unknown",
+            MessageStatus::Other(_) => "unrecognised",
         };
         write!(f, "{name} ({})", self.code())
     }
@@ -212,6 +229,30 @@ mod tests {
         assert_eq!(m.status.code(), 77);
         assert!(!m.status.is_pending());
         assert!(!m.status.is_final_failure());
+    }
+
+    #[test]
+    fn inbox_records_do_not_pretend_to_be_queued() {
+        let json = r#"{"messageid":35850015,"message":"hi","sender":"0912",
+                       "receptor":"3000202030","date":1357206241}"#;
+        let m: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(m.status, MessageStatus::Unknown);
+        assert!(!m.status.is_pending());
+        assert!(!m.status.is_final_failure());
+    }
+
+    #[test]
+    fn loosely_typed_fields_still_decode() {
+        // `localid` arrives quoted in the docs but may arrive bare, and
+        // optional text may arrive as null.
+        let json = r#"{"messageid":"85463238","localid":450,"status":"10",
+                       "statustext":null,"sender":null,"cost":"120"}"#;
+        let m: Message = serde_json::from_str(json).unwrap();
+        assert_eq!(m.message_id, 85463238);
+        assert_eq!(m.local_id.as_deref(), Some("450"));
+        assert_eq!(m.status, MessageStatus::Delivered);
+        assert_eq!(m.status_text, "");
+        assert_eq!(m.cost, 120);
     }
 
     #[test]
