@@ -12,8 +12,8 @@ voice-call API.
 
 > [!WARNING]
 > **This crate is under active development.** The API may change between
-> `0.x` releases, and not every endpoint has been exercised against a live
-> Kavenegar account yet. If a response fails to decode, please
+> `0.x` releases, There are a few things that I need to check and implement. 
+> If a response fails to decode, please
 > [open an issue](https://github.com/goudarz/kavenegar-rs/issues) with the raw
 > body — `Error::Decode` includes it.
 
