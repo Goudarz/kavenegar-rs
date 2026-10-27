@@ -6,29 +6,30 @@ rust-version = "1.88"
 authors = ["Goudarz Jafari <hi@goudarzjafari.com>"]
 description = "Async Rust client for the Kavenegar SMS, OTP and voice-call API"
 documentation = "https://docs.rs/kavenegar"
-readme = "README.md"
 repository = "https://github.com/goudarz/kavenegar-rs"
-homepage = "https://github.com/goudarz/kavenegar-rs"
 license = "MIT"
 keywords = ["kavenegar", "sms", "otp", "iran", "api-client"]
 categories = ["api-bindings", "asynchronous", "web-programming::http-client"]
 exclude = [".github/", "*.log", "RELEASE_NOTES.md", "deny.toml"]
 
 [dependencies]
-reqwest = { version = "0.13.4", default-features = false, features = [
-    "json",
+# Responses are read as bytes and parsed with serde_json directly, so
+# reqwest's own `json` and `charset` decoding are not needed.
+reqwest = { version = "0.13.5", default-features = false, features = [
     "query",
     "form",
     "http2",
-    "charset",
     "system-proxy",
 ] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+thiserror = "2.0.21"
 
 [dev-dependencies]
-tokio = { version = "1", features = [
+# Only the send_otp example uses it, to show a code drawn from the OS's
+# secure random source rather than something guessable.
+getrandom = "0.4.3"
+tokio = { version = "1.54.1", features = [
     "macros",
     "rt-multi-thread",
     "net",
@@ -61,7 +62,7 @@ utils = []
 # TLS backed by rustls; no OpenSSL on the build machine.
 rustls-tls = ["reqwest/rustls"]
 # TLS backed by the platform's native stack (schannel/Secure Transport/OpenSSL).
-native-tls = ["reqwest/default-tls"]
+native-tls = ["reqwest/native-tls"]
 
 [package.metadata.docs.rs]
 all-features = true

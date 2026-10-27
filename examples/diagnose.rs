@@ -17,7 +17,11 @@ async fn main() {
         std::process::exit(1);
     };
 
-    println!("key: {} chars, ending {}", api_key.len(), tail(&api_key));
+    println!(
+        "key: {} chars, ending {}",
+        api_key.trim().chars().count(),
+        tail(&api_key)
+    );
     println!("host: {}\n", kavenegar::DEFAULT_BASE_URL);
 
     let client = Kavenegar::new(api_key);
@@ -120,6 +124,7 @@ fn describe(err: &Error) -> String {
 
 /// Shows just enough of the key to tell two apart, without printing it.
 fn tail(key: &str) -> String {
-    let n = key.len().saturating_sub(4);
-    format!("...{}", &key[n..])
+    let chars: Vec<char> = key.trim().chars().collect();
+    let last: String = chars[chars.len().saturating_sub(4)..].iter().collect();
+    format!("...{last}")
 }

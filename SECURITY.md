@@ -42,6 +42,14 @@ travels further than a header does. The crate therefore:
 - **Redacts the key from response bodies** kept for diagnostics, in case the
   server ever echoes it back.
 - **Redacts the key in `Debug`** for both `Kavenegar` and `ClientBuilder`.
+- **Validates the key's characters.** The key is placed in the URL path
+  verbatim, so whitespace (a trailing newline from a secrets file), `/`, `?`,
+  `#` or `%` would silently change which URL is requested. Such keys are
+  rejected when the client is built, without echoing the key.
+- **Requires TLS 1.2 or newer, and HTTPS only.** rustls never offers older
+  versions; the platform stack (`native-tls`) might, so the floor is set
+  explicitly. Once the base URL is HTTPS the client also refuses to send any
+  request over plain HTTP.
 - **Refuses plain HTTP** to any non-loopback host, so the key cannot be sent
   in clear text by a misconfigured `base_url`. Loopback stays allowed so local
   mock servers work.
@@ -56,6 +64,50 @@ inside the TLS session, and it will appear in Kavenegar's own server logs and
 in any proxy you configure. Treat a corporate TLS-terminating proxy as a party
 that learns your key.
 
+### Abuse through your own users: SMS pumping
+
+Kavenegar takes recipient lists as comma-separated text. An application that
+passes a phone number typed by an end user straight into `send` or `lookup`
+would let that user enter `"0912…,0913…,…"` and turn one request into up to
+200 sends billed to the application's account — the attack known as SMS
+pumping or toll fraud. Every phone and line number is therefore checked to be
+plain ASCII digits with an optional leading `+` before anything is sent.
+
+This closes the injection; it does not rate-limit. Throttle OTP requests per
+user and per IP in your application as well.
+
+### Secrets and personal data in `Debug` output
+
+Besides the client's own key, `Debug` redacts a sub-account's API key on the
+template builders, the token values of a lookup (usually one-time passwords),
+and the recipients and text of `send`, `send_array` and `text_to_speech`,
+showing only counts and lengths. An upload builder shows the file's size, not
+its bytes.
+
+### Log injection
+
+Kavenegar's error message (`return.message`) is text from the network that
+ends up in `Display` and therefore in logs. Before it is stored, control
+characters — newlines that could forge extra log entries, ANSI escapes that
+could rewrite a terminal — and Unicode direction overrides become spaces, and
+it is capped at 512 characters.
+
+`Error::Decode`'s `Display` names only the kind and position of the failure.
+A serde message can quote the value it rejected — a phone number, a message
+body — so that full message is reachable only through `source()` or `Debug`.
+
+### Retries and duplicates
+
+`reqwest` 0.13 can retry on its own. Its default, which this crate keeps,
+retries only a request the server explicitly refused before processing it
+(an HTTP/2 `REFUSED_STREAM` or `GOAWAY`), so it cannot duplicate a send.
+
+
+`Error::is_retryable` reports timeouts as retryable, but a timed-out send may
+already have been accepted. Retrying it can deliver twice and charge twice.
+Attach `local_ids` — Kavenegar refuses to send a repeated local id — before
+retrying a send, and issue a fresh one-time password rather than resending.
+
 ### Denial of service
 
 - Response bodies are capped at [`MAX_RESPONSE_BYTES`] (8 MiB) **while
@@ -66,7 +118,8 @@ that learns your key.
 - Batch-size limits documented by Kavenegar are enforced locally: 200
   recipients per send, `send_array`, voice call, block or existence check; 50
   per unblock; 500 message ids per status, select or cancel; and matching
-  array lengths for `send_array`.
+  array lengths for `send_array`. Uploads over the documented 10 MB (image)
+  or 20 MB (video) limits are refused before they are sent.
 
 ### Personal data in errors
 
@@ -106,7 +159,13 @@ messages themselves.
 ## Supply chain
 
 - Dependencies are few and mainstream: `reqwest`, `serde`, `serde_json`,
-  `thiserror`.
+  `thiserror`. Only the `reqwest` features actually used are enabled, which
+  keeps `encoding_rs` and `mime` out of the tree.
+- `Cargo.lock` is committed, so CI builds exactly what was reviewed, and
+  Dependabot proposes dependency and action updates weekly.
+- Every GitHub Action is pinned to a full commit SHA, not a movable tag. The
+  workflow token is read-only by default, and checkout does not persist
+  credentials.
 - CI runs [`cargo audit`](https://github.com/RustSec/rustsec) against the
   [RustSec advisory database](https://rustsec.org) and
   [`cargo deny`](https://github.com/EmbarkStudios/cargo-deny) for advisories,

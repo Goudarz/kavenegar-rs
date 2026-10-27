@@ -37,12 +37,14 @@ pub struct Page<T> {
 
 impl<T> Page<T> {
     /// Whether another page follows this one.
+    #[must_use]
     pub fn has_more(&self) -> bool {
         self.current_page < self.total_pages
     }
 
     /// The number to pass to the next request's `page`, if there is a next
     /// page.
+    #[must_use]
     pub fn next_page(&self) -> Option<u32> {
         if !self.has_more() {
             return None;
@@ -53,6 +55,7 @@ impl<T> Page<T> {
     }
 
     /// Drops the pagination counters, keeping only the records.
+    #[must_use]
     pub fn into_items(self) -> Vec<T> {
         self.items
     }

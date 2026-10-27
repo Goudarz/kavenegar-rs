@@ -17,6 +17,12 @@ use crate::page::Page;
 
 const MODULE: &str = "media";
 
+/// The largest image Kavenegar accepts, in bytes.
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// The largest video Kavenegar accepts, in bytes.
+const MAX_VIDEO_BYTES: usize = 20 * 1024 * 1024;
+
 /// Entry point for the `media` endpoints, from [`Kavenegar::media`].
 #[derive(Debug, Clone, Copy)]
 pub struct MediaService<'a> {
@@ -69,6 +75,13 @@ impl<'a> MediaService<'a> {
     }
 
     /// Fetches one media file's details by its identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if `id` is empty. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn get(self, id: impl Into<String>) -> Result<Media> {
         let id = non_empty_id(id)?;
         // Documented as an HTTP GET.
@@ -78,6 +91,13 @@ impl<'a> MediaService<'a> {
     }
 
     /// Deletes a media file permanently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if `id` is empty. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn delete(self, id: impl Into<String>) -> Result<MediaDeletion> {
         let id = non_empty_id(id)?;
         // Documented as an HTTP DELETE.
@@ -88,13 +108,23 @@ impl<'a> MediaService<'a> {
 }
 
 /// Builds a call to `media/upload`. Await it to send the file.
-#[derive(Debug)]
 #[must_use = "the file is only uploaded when the builder is awaited"]
 pub struct UploadBuilder<'a> {
     client: &'a Kavenegar,
     file_name: String,
     bytes: Vec<u8>,
     mime: Option<String>,
+}
+
+impl std::fmt::Debug for UploadBuilder<'_> {
+    /// Shows the file's size rather than dumping its bytes into a log.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UploadBuilder")
+            .field("file_name", &self.file_name)
+            .field("bytes", &self.bytes.len())
+            .field("mime", &self.mime)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> UploadBuilder<'a> {
@@ -123,6 +153,24 @@ impl<'a> IntoFuture for UploadBuilder<'a> {
             let mime = self
                 .mime
                 .unwrap_or_else(|| guess_mime(&self.file_name).to_owned());
+
+            // Kavenegar's published limits; checking them here saves
+            // uploading tens of megabytes only to be refused.
+            let limit = if mime.starts_with("video/") {
+                MAX_VIDEO_BYTES
+            } else {
+                MAX_IMAGE_BYTES
+            };
+            if self.bytes.len() > limit {
+                return Err(Error::invalid(
+                    "bytes",
+                    format!(
+                        "{} bytes exceeds Kavenegar's {} MB limit for `{mime}`",
+                        self.bytes.len(),
+                        limit / (1024 * 1024)
+                    ),
+                ));
+            }
 
             let part = reqwest::multipart::Part::bytes(self.bytes)
                 .file_name(self.file_name)
@@ -284,6 +332,7 @@ pub struct MediaReview {
 
 impl MediaReview {
     /// Whether the file cleared moderation.
+    #[must_use]
     pub fn is_approved(&self) -> bool {
         self.status == 1
     }
@@ -306,6 +355,7 @@ pub enum MediaStatus {
 
 impl MediaStatus {
     /// The numeric code as sent by the API.
+    #[must_use]
     pub fn code(self) -> i64 {
         match self {
             MediaStatus::Processing => 0,
@@ -316,6 +366,7 @@ impl MediaStatus {
     }
 
     /// Whether the file is processed and usable.
+    #[must_use]
     pub fn is_ready(self) -> bool {
         self == MediaStatus::Ready
     }

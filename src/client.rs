@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::value::RawValue;
 
 #[cfg(any(
     feature = "sms",
@@ -30,7 +30,7 @@ use serde_json::Value;
 ))]
 use serde::de::DeserializeOwned;
 
-use crate::error::{ApiError, ApiStatus, Error, Result, redact};
+use crate::error::{ApiError, ApiStatus, Error, Result, printable, redact};
 #[cfg(any(feature = "sms", feature = "verify", feature = "line"))]
 use crate::page::{Page, PageMeta};
 
@@ -93,8 +93,9 @@ impl Kavenegar {
     ///
     /// # Panics
     ///
-    /// Panics if the underlying TLS backend cannot be initialised. Use
-    /// [`Kavenegar::builder`] if you need to handle that failure.
+    /// Panics if the API key is empty or malformed (see
+    /// [`ClientBuilder::build`]), or if the TLS backend cannot be
+    /// initialised. Use [`Kavenegar::builder`] to handle those as a `Result`.
     #[expect(
         clippy::expect_used,
         reason = "documented panic; Kavenegar::builder returns a Result for callers who need one"
@@ -102,7 +103,7 @@ impl Kavenegar {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self::builder(api_key)
             .build()
-            .expect("failed to build the default HTTP client")
+            .expect("could not build the Kavenegar client")
     }
 
     /// Starts building a client with custom timeouts, a custom base URL, or
@@ -118,52 +119,62 @@ impl Kavenegar {
 
     /// Sending messages, and querying their status and history.
     #[cfg(feature = "sms")]
+    #[must_use]
     pub fn sms(&self) -> SmsService<'_> {
         SmsService::new(self)
     }
 
     /// One-time passwords and notification templates.
     #[cfg(feature = "verify")]
+    #[must_use]
     pub fn verify(&self) -> VerifyService<'_> {
         VerifyService::new(self)
     }
 
     /// Text-to-speech voice calls.
     #[cfg(feature = "call")]
+    #[must_use]
     pub fn call(&self) -> CallService<'_> {
         CallService::new(self)
     }
 
     /// Media files usable by messenger lines.
     #[cfg(feature = "media")]
+    #[must_use]
     pub fn media(&self) -> MediaService<'_> {
         MediaService::new(self)
     }
 
     /// Server time, and other utilities.
     #[cfg(feature = "utils")]
+    #[must_use]
     pub fn utils(&self) -> UtilsService<'_> {
         UtilsService::new(self)
     }
 
     /// Credit, expiry and account settings.
     #[cfg(feature = "account")]
+    #[must_use]
     pub fn account(&self) -> AccountService<'_> {
         AccountService::new(self)
     }
 
     /// The blocked-recipient list.
     #[cfg(feature = "line")]
+    #[must_use]
     pub fn line(&self) -> LineService<'_> {
         LineService::new(self)
     }
 
-    /// The API key this client authenticates with.
+    /// The API key this client authenticates with. Treat the result as a
+    /// secret: do not log it.
+    #[must_use]
     pub fn api_key(&self) -> &str {
         &self.inner.api_key
     }
 
     /// The API root this client targets.
+    #[must_use]
     pub fn base_url(&self) -> &str {
         &self.inner.base_url
     }
@@ -178,16 +189,11 @@ impl Kavenegar {
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<Vec<T>> {
-        let (entries, _, body) = self.request(verb, module, method, params).await?;
-        match entries {
-            Value::Null => Ok(Vec::new()),
-            Value::Array(_) => {
-                serde_json::from_value(entries).map_err(|source| Error::Decode { source, body })
-            }
-            // Some endpoints collapse a single result to a bare object.
-            other => serde_json::from_value(other)
-                .map(|one| vec![one])
-                .map_err(|source| Error::Decode { source, body }),
+        let (status, body) = self.fetch(verb, module, method, params).await?;
+        let envelope = self.envelope(status, &body)?;
+        match envelope.entries {
+            None => Ok(Vec::new()),
+            Some(raw) => self.decode_list(raw, &body),
         }
     }
 
@@ -207,8 +213,9 @@ impl Kavenegar {
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<T> {
-        let (entries, _, body) = self.request(verb, module, method, params).await?;
-        decode_single(method, entries, body)
+        let (status, body) = self.fetch(verb, module, method, params).await?;
+        let envelope = self.envelope(status, &body)?;
+        self.decode_single(method, envelope.entries, &body)
     }
 
     /// Runs a request whose payload is not needed, only its success.
@@ -220,7 +227,8 @@ impl Kavenegar {
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<()> {
-        self.request(verb, module, method, params).await.map(|_| ())
+        let (status, body) = self.fetch(verb, module, method, params).await?;
+        self.envelope(status, &body).map(|_| ())
     }
 
     /// Runs a paginated request, pairing the records with the `metadata`
@@ -233,33 +241,27 @@ impl Kavenegar {
         method: &str,
         params: Vec<(&'static str, String)>,
     ) -> Result<Page<T>> {
-        let (entries, metadata, body) = self.request(verb, module, method, params).await?;
+        let (status, body) = self.fetch(verb, module, method, params).await?;
+        let envelope = self.envelope(status, &body)?;
 
-        let items: Vec<T> = match entries {
-            Value::Null => Vec::new(),
-            Value::Array(_) => serde_json::from_value(entries).map_err(|source| Error::Decode {
-                source,
-                body: body.clone(),
-            })?,
-            other => vec![
-                serde_json::from_value(other).map_err(|source| Error::Decode {
-                    source,
-                    body: body.clone(),
-                })?,
-            ],
+        let items: Vec<T> = match envelope.entries {
+            None => Vec::new(),
+            Some(raw) => self.decode_list(raw, &body)?,
         };
 
-        // Absent metadata is not an error: it just means one page.
-        let meta: PageMeta = if metadata.is_null() {
-            let counted = i64::try_from(items.len()).unwrap_or(i64::MAX);
-            PageMeta {
-                total_count: counted,
-                current_page: 1,
-                total_pages: 1,
-                page_size: counted,
+        let meta: PageMeta = match envelope.metadata {
+            Some(raw) => serde_json::from_str(raw.get())
+                .map_err(|source| self.decode_error(source, &body))?,
+            // Absent metadata is not an error: it just means one page.
+            None => {
+                let counted = i64::try_from(items.len()).unwrap_or(i64::MAX);
+                PageMeta {
+                    total_count: counted,
+                    current_page: 1,
+                    total_pages: 1,
+                    page_size: counted,
+                }
             }
-        } else {
-            serde_json::from_value(metadata).map_err(|source| Error::Decode { source, body })?
         };
 
         Ok(meta.into_page(items))
@@ -284,9 +286,10 @@ impl Kavenegar {
             .multipart(form)
             .send()
             .await
-            .map_err(|e| Error::transport(e, &self.inner.api_key))?;
-        let (entries, _, body) = self.unwrap_envelope(response).await?;
-        decode_single(method, entries, body)
+            .map_err(|e| Error::transport(&e, &self.inner.api_key))?;
+        let (status, body) = self.read_response(response).await?;
+        let envelope = self.envelope(status, &body)?;
+        self.decode_single(method, envelope.entries, &body)
     }
 
     /// Builds the URL for one endpoint.
@@ -297,17 +300,14 @@ impl Kavenegar {
         )
     }
 
-    /// Performs the call and unwraps the `return` envelope.
-    ///
-    /// Returns the raw `entries` and `metadata` values alongside the body they
-    /// came from, so callers can attach the body to a decode failure.
-    async fn request(
+    /// Sends one request and reads its body.
+    async fn fetch(
         &self,
         verb: Verb,
         module: &str,
         method: &str,
         params: Vec<(&'static str, String)>,
-    ) -> Result<(Value, Value, String)> {
+    ) -> Result<(reqwest::StatusCode, String)> {
         let url = self.endpoint(module, method);
         let http = &self.inner.http;
 
@@ -323,8 +323,8 @@ impl Kavenegar {
         let response = request
             .send()
             .await
-            .map_err(|e| Error::transport(e, &self.inner.api_key))?;
-        self.unwrap_envelope(response).await
+            .map_err(|e| Error::transport(&e, &self.inner.api_key))?;
+        self.read_response(response).await
     }
 
     /// Reads a response body, refusing to buffer more than [`MAX_RESPONSE_BYTES`].
@@ -332,70 +332,137 @@ impl Kavenegar {
     /// A compromised or misbehaving endpoint should not be able to exhaust the
     /// caller's memory, so the length is enforced while streaming rather than
     /// trusting `Content-Length`.
-    async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<String> {
+    async fn read_response(
+        &self,
+        mut response: reqwest::Response,
+    ) -> Result<(reqwest::StatusCode, String)> {
         let too_large = || Error::ResponseTooLarge {
             limit: MAX_RESPONSE_BYTES,
         };
 
-        if response
-            .content_length()
-            .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
-        {
+        let status = response.status();
+        let declared = response.content_length();
+        if declared.is_some_and(|n| n > MAX_RESPONSE_BYTES as u64) {
             return Err(too_large());
         }
 
-        let mut buf: Vec<u8> = Vec::new();
-        loop {
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|e| Error::transport(e, &self.inner.api_key))?;
-            let Some(chunk) = chunk else { break };
-
+        // Kavenegar declares the length, so this is usually one allocation.
+        let capacity = declared.and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
+        let mut buf: Vec<u8> = Vec::with_capacity(capacity);
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| Error::transport(&e, &self.inner.api_key))?
+        {
             if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
                 return Err(too_large());
             }
             buf.extend_from_slice(&chunk);
         }
 
-        Ok(String::from_utf8_lossy(&buf).into_owned())
+        // Valid UTF-8 — every Kavenegar response — is taken without a copy.
+        let body = String::from_utf8(buf)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+        Ok((status, body))
+    }
+
+    /// Parses the `return` envelope and fails on a non-success status.
+    ///
+    /// The payload is borrowed from `body` rather than parsed into an
+    /// intermediate tree, so each response is decoded in a single pass.
+    fn envelope<'b>(&self, status: reqwest::StatusCode, body: &'b str) -> Result<Envelope<'b>> {
+        let envelope: Envelope<'b> = match serde_json::from_str(body) {
+            Ok(envelope) => envelope,
+            Err(source) => {
+                // A non-JSON body from an error status is almost always a
+                // proxy or gateway page; report that rather than a serde error.
+                if !status.is_success() {
+                    return Err(Error::UnexpectedStatus {
+                        status: status.as_u16(),
+                        body: self.sanitize(body),
+                    });
+                }
+                return Err(self.decode_error(source, body));
+            }
+        };
+
+        let api_status = ApiStatus::from(envelope.ret.status);
+        if !api_status.is_success() {
+            // The message is server-supplied text bound for logs.
+            let message = printable(&envelope.ret.message, MAX_API_MESSAGE_CHARS);
+            return Err(ApiError::new(api_status, message).into());
+        }
+        Ok(envelope)
+    }
+
+    /// Decodes an `entries` value holding a list. A bare object, which some
+    /// endpoints send for a single result, becomes a one-element list.
+    #[cfg(any(
+        feature = "sms",
+        feature = "verify",
+        feature = "call",
+        feature = "line"
+    ))]
+    fn decode_list<T: DeserializeOwned>(&self, raw: &RawValue, body: &str) -> Result<Vec<T>> {
+        let json = raw.get();
+        if is_json_array(json) {
+            serde_json::from_str(json).map_err(|source| self.decode_error(source, body))
+        } else {
+            serde_json::from_str(json)
+                .map(|one| vec![one])
+                .map_err(|source| self.decode_error(source, body))
+        }
+    }
+
+    /// Decodes an `entries` value that should hold exactly one record.
+    ///
+    /// Some endpoints send that record as a bare object and others wrap it in
+    /// a one-element array, so both are accepted.
+    #[cfg(any(
+        feature = "sms",
+        feature = "verify",
+        feature = "account",
+        feature = "line",
+        feature = "media",
+        feature = "utils"
+    ))]
+    fn decode_single<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        entries: Option<&RawValue>,
+        body: &str,
+    ) -> Result<T> {
+        let Some(raw) = entries else {
+            return Err(Error::MissingEntries {
+                method: method.to_owned(),
+                body: self.sanitize(body),
+            });
+        };
+        let json = raw.get();
+        if is_json_array(json) {
+            let mut items: Vec<T> =
+                serde_json::from_str(json).map_err(|source| self.decode_error(source, body))?;
+            if items.len() == 1
+                && let Some(one) = items.pop()
+            {
+                return Ok(one);
+            }
+        }
+        serde_json::from_str(json).map_err(|source| self.decode_error(source, body))
+    }
+
+    /// Builds a decode error, cleaning the body only now that it is needed.
+    fn decode_error(&self, source: serde_json::Error, body: &str) -> Error {
+        Error::Decode {
+            source,
+            body: self.sanitize(body),
+        }
     }
 
     /// Trims a body for an error and strips the API key, in case the server
     /// ever echoes it back.
     fn sanitize(&self, body: &str) -> String {
         redact(&truncate(body), &self.inner.api_key)
-    }
-
-    /// Checks the `return` block and hands back the payload.
-    async fn unwrap_envelope(&self, response: reqwest::Response) -> Result<(Value, Value, String)> {
-        let http_status = response.status();
-        let body = self.read_body_capped(response).await?;
-
-        let envelope: Envelope = match serde_json::from_str(&body) {
-            Ok(envelope) => envelope,
-            Err(source) => {
-                // A non-JSON body from an error status is almost always a
-                // proxy or gateway page; report that rather than a serde error.
-                if !http_status.is_success() {
-                    return Err(Error::UnexpectedStatus {
-                        status: http_status.as_u16(),
-                        body: self.sanitize(&body),
-                    });
-                }
-                return Err(Error::Decode {
-                    source,
-                    body: self.sanitize(&body),
-                });
-            }
-        };
-
-        let status = ApiStatus::from(envelope.ret.status);
-        if !status.is_success() {
-            return Err(ApiError::new(status, envelope.ret.message).into());
-        }
-
-        Ok((envelope.entries, envelope.metadata, self.sanitize(&body)))
     }
 }
 
@@ -439,41 +506,52 @@ pub(crate) enum Verb {
     Delete,
 }
 
-/// Decodes an `entries` value that should hold exactly one record.
-///
-/// Some endpoints send that record as a bare object and others wrap it in a
-/// one-element array, so both are accepted.
+/// Whether a raw JSON value is an array. `RawValue` holds no surrounding
+/// whitespace, so the first byte decides.
 #[cfg(any(
     feature = "sms",
     feature = "verify",
+    feature = "call",
     feature = "account",
     feature = "line",
     feature = "media",
     feature = "utils"
 ))]
-fn decode_single<T: DeserializeOwned>(method: &str, entries: Value, body: String) -> Result<T> {
-    let value = match entries {
-        Value::Array(mut items) if items.len() == 1 => items.remove(0),
-        Value::Null => {
-            return Err(Error::MissingEntries {
-                method: method.to_owned(),
-                body,
-            });
-        }
-        other => other,
-    };
-    serde_json::from_value(value).map_err(|source| Error::Decode { source, body })
+fn is_json_array(json: &str) -> bool {
+    json.trim_start().starts_with('[')
 }
 
+/// The longest server-supplied error message kept, in characters.
+const MAX_API_MESSAGE_CHARS: usize = 512;
+
 /// The response envelope every Kavenegar endpoint wraps its payload in.
+///
+/// `entries` and `metadata` stay as unparsed slices of the body until the
+/// caller knows what type they hold. A JSON `null` reads as `None`.
 #[derive(Deserialize)]
-struct Envelope {
+struct Envelope<'a> {
     #[serde(rename = "return")]
     ret: ReturnBlock,
-    #[serde(default)]
-    entries: Value,
-    #[serde(default)]
-    metadata: Value,
+    #[serde(default, borrow)]
+    #[cfg_attr(
+        not(any(
+            feature = "sms",
+            feature = "verify",
+            feature = "call",
+            feature = "account",
+            feature = "line",
+            feature = "media",
+            feature = "utils"
+        )),
+        allow(dead_code)
+    )]
+    entries: Option<&'a RawValue>,
+    #[serde(default, borrow)]
+    #[cfg_attr(
+        not(any(feature = "sms", feature = "verify", feature = "line")),
+        allow(dead_code)
+    )]
+    metadata: Option<&'a RawValue>,
 }
 
 #[derive(Deserialize)]
@@ -499,6 +577,7 @@ fn truncate(body: &str) -> String {
 }
 
 /// Builds a [`Kavenegar`] client with non-default settings.
+#[must_use = "a builder does nothing until `build` is called"]
 pub struct ClientBuilder {
     api_key: String,
     base_url: String,
@@ -512,6 +591,7 @@ impl std::fmt::Debug for ClientBuilder {
         f.debug_struct("ClientBuilder")
             .field("base_url", &self.base_url)
             .field("timeout", &self.timeout)
+            .field("custom_http_client", &self.http.is_some())
             .field("api_key", &"<redacted>")
             .finish()
     }
@@ -558,14 +638,18 @@ impl ClientBuilder {
 
     /// Builds the client.
     ///
+    /// Surrounding whitespace on the API key, such as the trailing newline of
+    /// a secrets file, is removed first.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidParameter`] if the API key is empty, and
+    /// Returns [`Error::InvalidParameter`] if the API key is empty or holds a
+    /// character that would change the request URL — inner whitespace, `/`,
+    /// `?`, `#` or `%` — or if the base URL is not HTTPS. Returns
     /// [`Error::Http`] if the TLS backend fails to initialise.
     pub fn build(self) -> Result<Kavenegar> {
-        if self.api_key.trim().is_empty() {
-            return Err(Error::invalid("api_key", "must not be empty"));
-        }
+        let api_key = self.api_key.trim().to_owned();
+        crate::check::api_key(&api_key)?;
 
         let base_url = self.base_url.trim_end_matches('/').to_owned();
         check_base_url(&base_url)?;
@@ -580,19 +664,29 @@ impl ClientBuilder {
                     .redirect(reqwest::redirect::Policy::none())
                     // Bound the handshake separately: without this, an
                     // unreachable host holds the request for the full timeout.
-                    .connect_timeout(Duration::from_secs(10));
+                    .connect_timeout(Duration::from_secs(10))
+                    // Defence in depth behind `check_base_url`: once the root
+                    // is HTTPS, no request from this client can go out in
+                    // clear text.
+                    .https_only(base_url.starts_with("https://"));
+                // rustls already refuses anything older, but a platform TLS
+                // stack may still offer TLS 1.0 and 1.1.
+                #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]
+                {
+                    builder = builder.tls_version_min(reqwest::tls::Version::TLS_1_2);
+                }
                 if let Some(timeout) = self.timeout {
                     builder = builder.timeout(timeout);
                 }
                 builder
                     .build()
-                    .map_err(|e| Error::transport(e, &self.api_key))?
+                    .map_err(|e| Error::transport(&e, &api_key))?
             }
         };
 
         Ok(Kavenegar {
             inner: Arc::new(Inner {
-                api_key: self.api_key,
+                api_key,
                 base_url,
                 http,
             }),
@@ -607,6 +701,15 @@ impl ClientBuilder {
 fn check_base_url(base_url: &str) -> Result<()> {
     let url = reqwest::Url::parse(base_url)
         .map_err(|e| Error::invalid("base_url", format!("not a valid URL: {e}")))?;
+
+    // Endpoint paths are appended to the base URL as text, so a query or
+    // fragment would swallow them.
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(Error::invalid(
+            "base_url",
+            "must not contain a query string or fragment",
+        ));
+    }
 
     let loopback = url.host_str().is_some_and(|host| {
         // `host_str` keeps the brackets around an IPv6 literal.
@@ -646,6 +749,28 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn surrounding_whitespace_on_the_key_is_trimmed() {
+        let client = Kavenegar::builder(
+            "  abc123
+",
+        )
+        .build()
+        .unwrap();
+        assert_eq!(client.api_key(), "abc123");
+        assert!(Kavenegar::builder("abc 123").build().is_err());
+    }
+
+    #[test]
+    fn a_base_url_with_a_query_is_refused() {
+        assert!(
+            Kavenegar::builder("k")
+                .base_url("https://api.kavenegar.com/v1?x=1")
+                .build()
+                .is_err()
+        );
     }
 
     #[test]

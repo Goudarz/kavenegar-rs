@@ -101,6 +101,7 @@ pub enum MessageStatus {
 
 impl MessageStatus {
     /// The numeric code as sent by the API.
+    #[must_use]
     pub fn code(self) -> i64 {
         match self {
             MessageStatus::Unknown => 0,
@@ -120,11 +121,13 @@ impl MessageStatus {
     }
 
     /// Whether the message reached the handset.
+    #[must_use]
     pub fn is_delivered(self) -> bool {
         self == MessageStatus::Delivered
     }
 
     /// Whether the message failed for good and will not progress further.
+    #[must_use]
     pub fn is_final_failure(self) -> bool {
         matches!(
             self,
@@ -137,6 +140,7 @@ impl MessageStatus {
     }
 
     /// Whether the message is still moving through the pipeline.
+    #[must_use]
     pub fn is_pending(self) -> bool {
         matches!(
             self,

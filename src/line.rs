@@ -9,6 +9,7 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::check;
 use crate::client::{BoxFuture, Kavenegar, Verb};
 use crate::de::{lenient_i64, lenient_opt_string, lenient_string};
 use crate::error::{Error, Result};
@@ -59,6 +60,14 @@ impl<'a> LineService<'a> {
     /// The result reports, per recipient, whether it was newly blocked
     /// ([`BlockedState::Active`]) or already present
     /// ([`BlockedState::AlreadyExists`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if the line number or a recipient is not a plain number, or there are no
+    /// recipients or more than 200. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn block(
         self,
         line_number: impl Into<String>,
@@ -75,6 +84,14 @@ impl<'a> LineService<'a> {
     /// Only blocks added through the panel or the API can be removed; a block
     /// the recipient placed themselves (by cancelling with `11`) or one placed
     /// by the operator cannot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if the line number or a recipient is not a plain number, or there are no
+    /// recipients or more than 50. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn unblock(
         self,
         line_number: impl Into<String>,
@@ -91,6 +108,14 @@ impl<'a> LineService<'a> {
     ///
     /// Each result carries [`BlockedState::Active`] when the recipient is
     /// blocked, or [`BlockedState::NotExists`] when it is not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if the line number or a recipient is not a plain number, or there are no
+    /// recipients or more than 200. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn is_blocked(
         self,
         line_number: impl Into<String>,
@@ -146,9 +171,7 @@ impl<'a> IntoFuture for BlockedListBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            if self.line_number.trim().is_empty() {
-                return Err(Error::invalid("line_number", "must not be empty"));
-            }
+            check::number("line_number", &self.line_number)?;
             let mut params = vec![("linenumber", self.line_number)];
             if let Some(page_number) = self.page_number {
                 params.push(("pagenumber", page_number.to_string()));
@@ -204,6 +227,7 @@ pub enum BlockReason {
 
 impl BlockReason {
     /// The numeric code as sent by the API.
+    #[must_use]
     pub fn code(self) -> i64 {
         match self {
             BlockReason::WebService => 0,
@@ -217,6 +241,7 @@ impl BlockReason {
 
     /// Whether [`LineService::unblock`] can lift this block. Only blocks
     /// added through the panel or the API can be removed.
+    #[must_use]
     pub fn is_removable(self) -> bool {
         matches!(self, BlockReason::WebService | BlockReason::Panel)
     }
@@ -289,6 +314,7 @@ pub enum BlockedState {
 
 impl BlockedState {
     /// Whether the recipient is on the blocked list.
+    #[must_use]
     pub fn is_blocked(&self) -> bool {
         matches!(self, BlockedState::Active | BlockedState::AlreadyExists)
     }
@@ -313,9 +339,7 @@ fn block_params(
     max: usize,
 ) -> Result<Vec<(&'static str, String)>> {
     let line_number = line_number.into();
-    if line_number.trim().is_empty() {
-        return Err(Error::invalid("line_number", "must not be empty"));
-    }
+    check::number("line_number", &line_number)?;
 
     let receptors: Vec<String> = receptors.into_iter().map(Into::into).collect();
     if receptors.is_empty() {
@@ -330,6 +354,8 @@ fn block_params(
             format!("at most {max} recipients per call, got {}", receptors.len()),
         ));
     }
+
+    check::numbers("receptors", &receptors)?;
 
     Ok(vec![
         ("linenumber", line_number),

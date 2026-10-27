@@ -2,6 +2,7 @@
 
 use std::future::IntoFuture;
 
+use crate::check;
 use crate::client::{BoxFuture, Kavenegar, Verb};
 use crate::error::{Error, Result};
 use crate::models::Message;
@@ -55,7 +56,8 @@ impl<'a> CallService<'a> {
 }
 
 /// Builds a call to `call/maketts`. Await it to place the call.
-#[derive(Debug)]
+///
+/// `Debug` shows counts and lengths, not the recipients or the text.
 #[must_use = "the call is only placed when the builder is awaited"]
 pub struct TextToSpeechBuilder<'a> {
     client: &'a Kavenegar,
@@ -65,6 +67,19 @@ pub struct TextToSpeechBuilder<'a> {
     local_ids: Vec<String>,
     repeat: Option<u8>,
     tag: Option<String>,
+}
+
+impl std::fmt::Debug for TextToSpeechBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextToSpeechBuilder")
+            .field("recipients", &self.receptors.len())
+            .field("message_chars", &self.message.chars().count())
+            .field("date", &self.date)
+            .field("local_ids", &self.local_ids.len())
+            .field("repeat", &self.repeat)
+            .field("tag", &self.tag)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> TextToSpeechBuilder<'a> {
@@ -114,8 +129,12 @@ impl<'a> TextToSpeechBuilder<'a> {
                 ),
             ));
         }
+        check::numbers("receptors", &self.receptors)?;
         if self.message.trim().is_empty() {
             return Err(Error::invalid("message", "must not be empty"));
+        }
+        if let Some(tag) = &self.tag {
+            check::tag(tag)?;
         }
         if !self.local_ids.is_empty() && self.local_ids.len() != self.receptors.len() {
             return Err(Error::invalid(

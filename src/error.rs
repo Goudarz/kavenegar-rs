@@ -39,7 +39,17 @@ pub enum Error {
     /// is kept out of `Display`, so `error!("{e}")` is safe to log, but it is
     /// present in `Debug`: treat `error!("{e:?}")` as a log line carrying
     /// personal data.
-    #[error("could not decode response body: {source}")]
+    ///
+    /// The same applies to `source`: a serde message can quote the value it
+    /// rejected, so `Display` reports only the kind of failure and where it
+    /// happened, and the full message is reached through `source()` or
+    /// `Debug`.
+    #[error(
+        "could not decode the response ({} error at line {}, column {})",
+        decode_kind(source),
+        source.line(),
+        source.column()
+    )]
     Decode {
         /// The underlying serde failure.
         #[source]
@@ -87,10 +97,20 @@ pub enum Error {
     },
 }
 
+/// Names a serde failure without quoting any of the data it was looking at.
+fn decode_kind(source: &serde_json::Error) -> &'static str {
+    match source.classify() {
+        serde_json::error::Category::Io => "I/O",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "type",
+        serde_json::error::Category::Eof => "unexpected end of input",
+    }
+}
+
 impl Error {
     /// Wraps a transport failure, scrubbing the API key from its message.
-    pub(crate) fn transport(source: reqwest::Error, api_key: &str) -> Self {
-        Error::Http(TransportError::new(&source, api_key))
+    pub(crate) fn transport(source: &reqwest::Error, api_key: &str) -> Self {
+        Error::Http(TransportError::new(source, api_key))
     }
 
     pub(crate) fn invalid(parameter: &'static str, reason: impl Into<String>) -> Self {
@@ -101,6 +121,7 @@ impl Error {
     }
 
     /// The API status code, when this error came from the API envelope.
+    #[must_use]
     pub fn api_status(&self) -> Option<ApiStatus> {
         match self {
             Error::Api(e) => Some(e.status()),
@@ -113,6 +134,17 @@ impl Error {
     /// Covers transport hiccups and the API's own "busy" and "rate limited"
     /// statuses. Never true for a bad API key, malformed recipients, or any
     /// other problem a retry would reproduce exactly.
+    ///
+    /// # Retrying a send can send twice
+    ///
+    /// A timeout means no answer arrived, not that nothing happened:
+    /// Kavenegar may already have accepted the message. Retrying `send`,
+    /// `send_array`, `lookup` or `text_to_speech` after a timeout can deliver
+    /// it twice and charge for both. For `send`, `send_array` and
+    /// `text_to_speech`, attach `local_ids` — Kavenegar does not send a
+    /// repeated local id again — before retrying; for a one-time password,
+    /// prefer issuing a fresh code over resending the old one.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         match self {
             Error::Api(e) => e.status().is_retryable(),
@@ -179,21 +211,25 @@ impl TransportError {
     }
 
     /// What kind of transport failure this was.
+    #[must_use]
     pub fn kind(&self) -> TransportKind {
         self.kind
     }
 
     /// The underlying cause, with the API key removed.
+    #[must_use]
     pub fn detail(&self) -> &str {
         &self.detail
     }
 
     /// Whether the request timed out.
+    #[must_use]
     pub fn is_timeout(&self) -> bool {
         self.kind == TransportKind::Timeout
     }
 
     /// Whether the connection could not be established.
+    #[must_use]
     pub fn is_connect(&self) -> bool {
         self.kind == TransportKind::Connect
     }
@@ -225,6 +261,27 @@ pub(crate) fn redact(text: &str, api_key: &str) -> String {
     text.replace(api_key, "[REDACTED]")
 }
 
+/// Makes server-supplied text safe to put in a log line.
+///
+/// Control characters (newlines that would forge extra log entries, ANSI
+/// escapes that would rewrite a terminal) and Unicode direction overrides
+/// (which can make text display differently from what it says) become
+/// spaces, and the result is capped at `max_chars`.
+pub(crate) fn printable(text: &str, max_chars: usize) -> String {
+    let mut out: String = text
+        .chars()
+        .take(max_chars)
+        .map(|c| {
+            let bidi = matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+            if c.is_control() || bidi { ' ' } else { c }
+        })
+        .collect();
+    if text.chars().nth(max_chars).is_some() {
+        out.push('…');
+    }
+    out
+}
+
 /// A failure reported by Kavenegar inside the `return` envelope.
 ///
 /// Kavenegar answers with HTTP 200 more often than not, carrying the real
@@ -245,16 +302,19 @@ impl ApiError {
     }
 
     /// The status Kavenegar reported.
+    #[must_use]
     pub fn status(&self) -> ApiStatus {
         self.status
     }
 
     /// The numeric status code, including codes this crate does not name.
+    #[must_use]
     pub fn code(&self) -> i32 {
         self.status.code()
     }
 
     /// The message Kavenegar sent, verbatim (usually Persian).
+    #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -375,11 +435,13 @@ api_status! {
 
 impl ApiStatus {
     /// Whether this code represents success.
+    #[must_use]
     pub fn is_success(self) -> bool {
         self == ApiStatus::Ok
     }
 
     /// Whether retrying the identical request could plausibly succeed.
+    #[must_use]
     pub fn is_retryable(self) -> bool {
         matches!(
             self,
@@ -428,6 +490,43 @@ mod tests {
         for code in [420, 427, 430, 604, 800, 809, 813] {
             assert!(!ApiStatus::from(code).is_retryable(), "{code}");
         }
+    }
+
+    #[test]
+    fn server_text_cannot_forge_log_lines_or_flip_direction() {
+        let hostile = "ok\n2026-01-01 ERROR forged\u{1b}[31m\u{202E}evil";
+        let clean = printable(hostile, 512);
+        assert!(!clean.chars().any(|c| c.is_control()), "{clean:?}");
+        assert!(!clean.contains('\u{202E}'));
+        assert!(clean.starts_with("ok "));
+
+        let long = "ب".repeat(600);
+        let capped = printable(&long, 512);
+        assert_eq!(capped.chars().count(), 513);
+        assert!(capped.ends_with('…'));
+    }
+
+    #[test]
+    fn decode_display_does_not_quote_the_rejected_value() {
+        #[derive(Debug, serde::Deserialize)]
+        struct T {
+            #[allow(dead_code)]
+            n: i64,
+        }
+        let source = serde_json::from_str::<T>(r#"{"n":"09121234567 secret-otp"}"#).unwrap_err();
+        // serde itself does quote it...
+        assert!(source.to_string().contains("secret-otp"));
+        let err = Error::Decode {
+            source,
+            body: String::new(),
+        };
+        // ...but this crate's Display does not.
+        let shown = err.to_string();
+        assert!(
+            !shown.contains("secret-otp") && !shown.contains("0912"),
+            "{shown}"
+        );
+        assert!(shown.contains("type error"), "{shown}");
     }
 
     #[test]

@@ -6,8 +6,8 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 yanked = "deny"
 ignore = []
 
-[licences]
-# Permissive licences only; nothing copyleft can enter the tree unnoticed.
+[licenses]
+# Permissive licenses only; nothing copyleft can enter the tree unnoticed.
 allow = [
     "MIT",
     "Apache-2.0",

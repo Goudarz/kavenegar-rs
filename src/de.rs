@@ -6,29 +6,51 @@
 //! each of those into a decode failure that throws away an otherwise good
 //! response, so the models route those fields through these helpers.
 
-use serde::Deserialize;
-use serde::de::{self, Deserializer};
-use serde_json::Value;
+use std::fmt;
+
+use serde::de::{self, Deserializer, Visitor};
 
 /// Accepts an integer sent as a number, a numeric string, or `null`.
 ///
 /// `null` and an empty string read as `0`. Anything else that is not an
 /// integer — a fraction, a word — is a decode error rather than a silent `0`.
 pub(crate) fn lenient_i64<'de, D: Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
-    match Value::deserialize(d)? {
-        Value::Null => Ok(0),
-        Value::Number(n) => n
-            .as_i64()
-            .ok_or_else(|| de::Error::custom(format!("`{n}` is not a 64-bit integer"))),
-        Value::String(s) if s.trim().is_empty() => Ok(0),
-        Value::String(s) => s
-            .trim()
-            .parse()
-            .map_err(|_| de::Error::custom(format!("`{s}` is not an integer"))),
-        other => Err(de::Error::custom(format!(
-            "expected an integer, got {other}"
-        ))),
+    struct V;
+
+    impl Visitor<'_> for V {
+        type Value = i64;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("an integer, a numeric string, or null")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> {
+            i64::try_from(v).map_err(|_| E::custom("integer does not fit in 64 bits"))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<i64, E> {
+            let v = v.trim();
+            if v.is_empty() {
+                return Ok(0);
+            }
+            v.parse()
+                .map_err(|_| E::invalid_value(de::Unexpected::Str(v), &self))
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<i64, E> {
+            Ok(0)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<i64, E> {
+            Ok(0)
+        }
     }
+
+    d.deserialize_any(V)
 }
 
 /// Accepts a string, `null` (read as empty), or a bare number or boolean
@@ -59,35 +81,102 @@ pub(crate) fn lenient_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, 
 pub(crate) fn lenient_opt_string<'de, D: Deserializer<'de>>(
     d: D,
 ) -> Result<Option<String>, D::Error> {
-    match Value::deserialize(d)? {
-        Value::Null => Ok(None),
-        Value::String(s) => Ok(Some(s)),
-        Value::Number(n) => Ok(Some(n.to_string())),
-        Value::Bool(b) => Ok(Some(b.to_string())),
-        other => Err(de::Error::custom(format!("expected a string, got {other}"))),
+    struct V;
+
+    impl Visitor<'_> for V {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a string, a number, a boolean, or null")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_owned()))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
     }
+
+    d.deserialize_any(V)
 }
 
 /// Accepts `true`/`false`, `1`/`0`, their string forms, or `null` (false).
 #[cfg(feature = "media")]
 pub(crate) fn lenient_bool<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    match Value::deserialize(d)? {
-        Value::Null => Ok(false),
-        Value::Bool(b) => Ok(b),
-        Value::Number(n) => Ok(n.as_i64().is_some_and(|n| n != 0)),
-        Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" => Ok(true),
-            "false" | "0" | "" => Ok(false),
-            _ => Err(de::Error::custom(format!("`{s}` is not a boolean"))),
-        },
-        other => Err(de::Error::custom(format!(
-            "expected a boolean, got {other}"
-        ))),
+    struct V;
+
+    impl Visitor<'_> for V {
+        type Value = bool;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a boolean, 0 or 1, their string forms, or null")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<bool, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<bool, E> {
+            Ok(v != 0)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<bool, E> {
+            Ok(v != 0)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<bool, E> {
+            let v = v.trim();
+            if v.eq_ignore_ascii_case("true") || v == "1" {
+                Ok(true)
+            } else if v.eq_ignore_ascii_case("false") || v == "0" || v.is_empty() {
+                Ok(false)
+            } else {
+                Err(E::invalid_value(de::Unexpected::Str(v), &self))
+            }
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<bool, E> {
+            Ok(false)
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<bool, E> {
+            Ok(false)
+        }
     }
+
+    d.deserialize_any(V)
 }
 
 #[cfg(test)]
 mod tests {
+    use serde::Deserialize;
+
     use super::*;
 
     #[derive(Deserialize)]

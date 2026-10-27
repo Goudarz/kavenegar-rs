@@ -4,6 +4,7 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Serialize};
 
+use crate::check;
 use crate::client::{BoxFuture, Kavenegar, Verb};
 use crate::de::lenient_i64;
 use crate::error::{Error, Result};
@@ -17,6 +18,9 @@ const MAX_RECIPIENTS: usize = 200;
 
 /// The most message ids Kavenegar accepts in one status, select or cancel call.
 const MAX_MESSAGE_IDS: usize = 500;
+
+/// The most records `latestoutbox` returns, and its default.
+const MAX_OUTBOX_PAGE: u32 = 500;
 
 /// Entry point for the `sms` endpoints, from [`Kavenegar::sms`].
 #[derive(Debug, Clone, Copy)]
@@ -67,7 +71,9 @@ impl<'a> SmsService<'a> {
 
     /// Sends a distinct message to each recipient in a single call.
     ///
-    /// The recipient and message lists must be the same length; a mismatch is
+    /// The recipient and message lists must be the same length, and a sender
+    /// is required — set one line for all with [`SendArrayBuilder::sender`]
+    /// or one per message with [`SendArrayBuilder::senders`]. Mistakes are
     /// rejected locally before any request is sent.
     ///
     /// ```no_run
@@ -109,6 +115,13 @@ impl<'a> SmsService<'a> {
     /// are reported; older ones come back as [`MessageStatus::Invalid`].
     ///
     /// [`MessageStatus::Invalid`]: crate::MessageStatus::Invalid
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if `message_ids` is empty or holds more than 500 ids. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn status(self, message_ids: impl IntoIterator<Item = i64>) -> Result<Vec<Message>> {
         let ids = message_id_list(message_ids)?;
         self.client
@@ -118,6 +131,13 @@ impl<'a> SmsService<'a> {
 
     /// Looks up delivery status by the local identifiers you supplied at send
     /// time, for messages sent within the last 12 hours.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if `local_ids` is empty. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn status_by_local_id(
         self,
         local_ids: impl IntoIterator<Item = i64>,
@@ -160,6 +180,13 @@ impl<'a> SmsService<'a> {
     /// panel, or fails with [`ApiStatus::AccessDenied`].
     ///
     /// [`ApiStatus::AccessDenied`]: crate::ApiStatus::AccessDenied
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if `message_ids` is empty or holds more than 500 ids. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn select(self, message_ids: impl IntoIterator<Item = i64>) -> Result<Vec<Message>> {
         let ids = message_id_list(message_ids)?;
         self.client
@@ -211,6 +238,13 @@ impl<'a> SmsService<'a> {
     ///
     /// Only a message sent with a future date can be cancelled. Up to 500
     /// identifiers per call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidParameter`], before
+    /// anything is sent, if `message_ids` is empty or holds more than 500 ids. Otherwise returns
+    /// [`Error::Api`] when Kavenegar refuses the request, or
+    /// another [`Error`] if it cannot be sent or decoded.
     pub async fn cancel(self, message_ids: impl IntoIterator<Item = i64>) -> Result<Vec<Message>> {
         let ids = message_id_list(message_ids)?;
         self.client
@@ -270,7 +304,9 @@ impl<'a> SmsService<'a> {
 }
 
 /// Builds a call to `sms/send`. Await it to send the message.
-#[derive(Debug)]
+///
+/// `Debug` shows counts and lengths, not the recipients or the text, which may
+/// be a one-time password.
 #[must_use = "the message is only sent when the builder is awaited"]
 pub struct SendBuilder<'a> {
     client: &'a Kavenegar,
@@ -284,6 +320,23 @@ pub struct SendBuilder<'a> {
     tag: Option<String>,
     policy: Option<String>,
     media_id: Option<String>,
+}
+
+impl std::fmt::Debug for SendBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendBuilder")
+            .field("recipients", &self.receptors.len())
+            .field("message_chars", &self.message.chars().count())
+            .field("sender", &self.sender)
+            .field("date", &self.date)
+            .field("message_type", &self.message_type)
+            .field("local_ids", &self.local_ids.len())
+            .field("hide", &self.hide)
+            .field("tag", &self.tag)
+            .field("policy", &self.policy)
+            .field("media_id", &self.media_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> SendBuilder<'a> {
@@ -352,8 +405,15 @@ impl<'a> SendBuilder<'a> {
 
     fn into_params(self) -> Result<(&'a Kavenegar, Vec<(&'static str, String)>)> {
         check_recipient_count(self.receptors.len())?;
+        check::numbers("receptors", &self.receptors)?;
         if self.message.trim().is_empty() {
             return Err(Error::invalid("message", "must not be empty"));
+        }
+        if let Some(sender) = &self.sender {
+            check::number("sender", sender)?;
+        }
+        if let Some(tag) = &self.tag {
+            check::tag(tag)?;
         }
         if !self.local_ids.is_empty() && self.local_ids.len() != self.receptors.len() {
             return Err(Error::invalid(
@@ -411,7 +471,8 @@ impl<'a> IntoFuture for SendBuilder<'a> {
 }
 
 /// Builds a call to `sms/sendarray`. Await it to send the messages.
-#[derive(Debug)]
+///
+/// `Debug` shows counts, not the recipients or the texts.
 #[must_use = "the messages are only sent when the builder is awaited"]
 pub struct SendArrayBuilder<'a> {
     client: &'a Kavenegar,
@@ -425,6 +486,23 @@ pub struct SendArrayBuilder<'a> {
     tag: Option<String>,
     policy: Option<String>,
     media_id: Option<String>,
+}
+
+impl std::fmt::Debug for SendArrayBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendArrayBuilder")
+            .field("recipients", &self.receptors.len())
+            .field("messages", &self.messages.len())
+            .field("senders", &self.senders)
+            .field("date", &self.date)
+            .field("message_types", &self.message_types)
+            .field("local_ids", &self.local_ids.len())
+            .field("hide", &self.hide)
+            .field("tag", &self.tag)
+            .field("policy", &self.policy)
+            .field("media_id", &self.media_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> SendArrayBuilder<'a> {
@@ -495,6 +573,7 @@ impl<'a> SendArrayBuilder<'a> {
 
     fn into_params(self) -> Result<(&'a Kavenegar, Vec<(&'static str, String)>)> {
         check_recipient_count(self.receptors.len())?;
+        check::numbers("receptors", &self.receptors)?;
         if self.receptors.len() != self.messages.len() {
             return Err(Error::invalid(
                 "messages",
@@ -518,7 +597,14 @@ impl<'a> SendArrayBuilder<'a> {
                 ),
             ));
         }
-        if !self.senders.is_empty() && self.senders.len() != self.receptors.len() {
+        // Unlike `send`, `sendarray` documents the sender as mandatory.
+        if self.senders.is_empty() {
+            return Err(Error::invalid(
+                "senders",
+                "send_array requires a sender; set one with `sender` or `senders`",
+            ));
+        }
+        if self.senders.len() != self.receptors.len() {
             return Err(Error::invalid(
                 "senders",
                 format!(
@@ -527,6 +613,10 @@ impl<'a> SendArrayBuilder<'a> {
                     self.senders.len()
                 ),
             ));
+        }
+        check::numbers("senders", &self.senders)?;
+        if let Some(tag) = &self.tag {
+            check::tag(tag)?;
         }
         if !self.local_ids.is_empty() && self.local_ids.len() != self.receptors.len() {
             return Err(Error::invalid(
@@ -542,11 +632,9 @@ impl<'a> SendArrayBuilder<'a> {
         // sendarray takes JSON arrays rather than comma-separated lists.
         let mut params = vec![
             ("receptor", json_array(&self.receptors)),
+            ("sender", json_array(&self.senders)),
             ("message", json_array(&self.messages)),
         ];
-        if !self.senders.is_empty() {
-            params.push(("sender", json_array(&self.senders)));
-        }
         if let Some(date) = self.date {
             params.push(("date", date.to_string()));
         }
@@ -617,9 +705,7 @@ impl<'a> IntoFuture for StatusByReceptorBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            if self.receptor.trim().is_empty() {
-                return Err(Error::invalid("receptor", "must not be empty"));
-            }
+            check::number("receptor", &self.receptor)?;
             check_window(self.start_date, self.end_date)?;
 
             let mut params = vec![
@@ -667,6 +753,9 @@ impl<'a> IntoFuture for SelectOutboxBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             check_window(self.start_date, self.end_date)?;
+            if let Some(sender) = &self.sender {
+                check::number("sender", sender)?;
+            }
             let mut params = vec![("startdate", self.start_date.to_string())];
             if let Some(end_date) = self.end_date {
                 params.push(("enddate", end_date.to_string()));
@@ -711,6 +800,17 @@ impl<'a> IntoFuture for LatestOutboxBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
+            if let Some(page_size) = self.page_size
+                && !(1..=MAX_OUTBOX_PAGE).contains(&page_size)
+            {
+                return Err(Error::invalid(
+                    "page_size",
+                    format!("must be between 1 and {MAX_OUTBOX_PAGE}"),
+                ));
+            }
+            if let Some(sender) = &self.sender {
+                check::number("sender", sender)?;
+            }
             let mut params = Vec::new();
             if let Some(page_size) = self.page_size {
                 params.push(("pagesize", page_size.to_string()));
@@ -799,9 +899,7 @@ impl<'a> IntoFuture for ReceiveBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            if self.line_number.trim().is_empty() {
-                return Err(Error::invalid("line_number", "must not be empty"));
-            }
+            check::number("line_number", &self.line_number)?;
             let params = vec![
                 ("linenumber", self.line_number),
                 ("isread", if self.unread { "0" } else { "1" }.to_owned()),
@@ -866,9 +964,7 @@ impl<'a> IntoFuture for InboxPagedBuilder<'a> {
 
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
-            if self.line_number.trim().is_empty() {
-                return Err(Error::invalid("line_number", "must not be empty"));
-            }
+            check::number("line_number", &self.line_number)?;
             if let Some(start) = self.start_date {
                 check_window(start, self.end_date)?;
             }
@@ -931,6 +1027,9 @@ impl<'a> IntoFuture for CountInboxBuilder<'a> {
     fn into_future(self) -> Self::IntoFuture {
         Box::pin(async move {
             check_window(self.start_date, self.end_date)?;
+            if let Some(line_number) = &self.line_number {
+                check::number("line_number", line_number)?;
+            }
             let mut params = vec![("startdate", self.start_date.to_string())];
             if let Some(end_date) = self.end_date {
                 params.push(("enddate", end_date.to_string()));
@@ -1157,6 +1256,52 @@ mod tests {
     }
 
     #[test]
+    fn a_recipient_cannot_smuggle_in_more_recipients() {
+        let c = client();
+        let err = c
+            .sms()
+            .send(["09121234567,09131234567"], "hi")
+            .into_params()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidParameter {
+                parameter: "receptors",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn send_array_requires_a_sender() {
+        let c = client();
+        let err = c
+            .sms()
+            .send_array(["0912"], ["hi"])
+            .into_params()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidParameter {
+                parameter: "senders",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn send_rejects_a_malformed_tag() {
+        let c = client();
+        assert!(
+            c.sms()
+                .send(["0912"], "hi")
+                .tag("has space")
+                .into_params()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn send_array_requires_matching_lengths() {
         let c = client();
         let err = c
@@ -1223,6 +1368,7 @@ mod tests {
         let (_, params) = c
             .sms()
             .send_array(["0912", "0913"], ["a", "b"])
+            .sender("10004346")
             .local_ids([1, 2])
             .message_type(MessageType::Flash)
             .into_params()
@@ -1265,6 +1411,24 @@ mod tests {
         assert!(check_window(100, Some(99)).is_err());
         assert!(check_window(100, Some(100)).is_ok());
         assert!(check_window(100, None).is_ok());
+    }
+
+    #[test]
+    fn debug_shows_no_recipient_or_message_text() {
+        let c = client();
+        let send = c.sms().send(["09121234567"], "your code is 48391");
+        let shown = format!("{send:?}");
+        assert!(
+            !shown.contains("48391") && !shown.contains("09121234567"),
+            "{shown}"
+        );
+
+        let batch = c.sms().send_array(["09121234567"], ["code 48391"]);
+        let shown = format!("{batch:?}");
+        assert!(
+            !shown.contains("48391") && !shown.contains("09121234567"),
+            "{shown}"
+        );
     }
 
     #[test]

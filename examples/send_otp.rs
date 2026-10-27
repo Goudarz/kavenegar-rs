@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let template = args.next().ok_or("usage: send_otp <receptor> <template>")?;
 
     // In a real application this belongs in your session store, not in a log.
-    let code = format!("{:05}", rand_code());
+    let code = otp_code()?;
 
     let client = Kavenegar::new(api_key);
 
@@ -53,12 +53,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// A throwaway 5-digit code. Use a real CSPRNG in production.
-fn rand_code() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    nanos % 100_000
+/// A uniformly random 5-digit code from the operating system's secure
+/// random source.
+///
+/// Rejection sampling keeps every code equally likely: `u32::MAX` is not a
+/// multiple of 100 000, so the few values at the very top are drawn again.
+fn otp_code() -> Result<String, getrandom::Error> {
+    const RANGE: u32 = 100_000;
+    const LIMIT: u32 = u32::MAX - (u32::MAX % RANGE);
+    loop {
+        let n = getrandom::u32()?;
+        if n < LIMIT {
+            return Ok(format!("{:05}", n % RANGE));
+        }
+    }
 }

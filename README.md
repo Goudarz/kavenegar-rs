@@ -131,6 +131,7 @@ let sent = client
         ["09177788155", "09131234567"],
         ["First message", "Second message"],
     )
+    .sender("10004346")          // required here; or .senders([...]) per message
     .await?;
 ```
 
@@ -322,8 +323,16 @@ nothing:
 
 ```rust
 // Two recipients but one message.
-let err = client.sms().send_array(["0912...", "0913..."], ["only one"]).await;
+let err = client
+    .sms()
+    .send_array(["09121234567", "09131234567"], ["only one"])
+    .sender("10004346")
+    .await;
 // -> InvalidParameter { parameter: "messages", .. }
+
+// A "phone number" that is really two, typed into your sign-up form.
+let err = client.verify().lookup("09121234567,09131234567", "verify-login", "4839").await;
+// -> InvalidParameter { parameter: "receptor", .. }
 ```
 
 ## Pagination
@@ -475,6 +484,9 @@ than a header. A URL travels further than a header does, so this crate:
   diagnosis and drop the URL.
 - **Redacts the key** from `Debug` output and from any response body kept for
   diagnostics.
+- **Requires TLS 1.2+**, on both TLS backends.
+- **Sanitises Kavenegar's error text** before it reaches `Display`, so a
+  newline or terminal escape in it cannot forge a log line.
 - **Refuses plain HTTP** to non-loopback hosts, so a misconfigured `base_url`
   cannot put the key on the wire in clear text.
 - **Never follows redirects**, which would hand the path — and the key in it —
@@ -483,6 +495,14 @@ than a header. A URL travels further than a header does, so this crate:
   `.redirect(reqwest::redirect::Policy::none())`.
 - **Caps response bodies at 8 MiB while streaming**, so a reply with no
   declared length cannot exhaust memory.
+- **Refuses a phone number that is really a list.** Kavenegar separates
+  recipients with commas, so an unchecked `"0912…,0913…"` from a sign-up form
+  would turn one OTP into many paid sends (SMS pumping). Every number must be
+  plain digits.
+- **Keeps secrets out of `Debug`**: the API key, a sub-account's key, and the
+  token values of a lookup (your one-time passwords).
+- **Validates the API key's characters**, so a stray newline or `/` cannot
+  silently send the request to a different URL.
 
 Each of these is covered by a test in [`tests/security.rs`](tests/security.rs).
 
@@ -514,6 +534,16 @@ The full policy, threat model, and reporting address are in
   contain a newline or an underscore. `token`, `token2` and `token3` may not
   contain spaces; `token10` allows 5 and `token20` allows 8. Kavenegar answers
   a broken rule with error 431, so this crate rejects it before sending.
+- **Every phone and line number is checked.** Only ASCII digits with an
+  optional leading `+` are accepted (`09121234567`, `+989121234567`,
+  `00989121234567`). Kavenegar takes lists as comma-separated text, so without
+  this a number typed by an end user, like `"0912…,0913…"`, would quietly
+  become several recipients billed to you. Convert Persian digits (`۰۹۱۲`)
+  before passing them in.
+- **Retrying a send can send twice.** After a timeout the message may already
+  be on its way; `is_retryable()` cannot know. Attach `local_ids` before
+  retrying a `send`, so Kavenegar drops the duplicate, and issue a fresh code
+  rather than resending an OTP.
 - **Local ids are numbers.** Kavenegar documents them as integers, so
   `local_ids` takes `i64`. A repeated local id is not sent twice.
 

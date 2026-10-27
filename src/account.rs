@@ -30,6 +30,11 @@ impl<'a> AccountService<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Api`](crate::Error::Api) when Kavenegar refuses the request, or
+    /// another [`Error`](crate::Error) if it cannot be sent or decoded.
     pub async fn info(self) -> Result<AccountInfo> {
         self.client
             .call_one(Verb::Post, MODULE, "info", Vec::new())
@@ -37,6 +42,11 @@ impl<'a> AccountService<'a> {
     }
 
     /// Reads the current account settings, changing nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Api`](crate::Error::Api) when Kavenegar refuses the request, or
+    /// another [`Error`](crate::Error) if it cannot be sent or decoded.
     pub async fn config(self) -> Result<AccountConfig> {
         // Documented as a parameterless GET.
         self.client

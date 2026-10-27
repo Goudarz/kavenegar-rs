@@ -107,6 +107,7 @@
 // Test code may assert loudly; library code may not.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod check;
 pub mod client;
 mod de;
 pub mod error;

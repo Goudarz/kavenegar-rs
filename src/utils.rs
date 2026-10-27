@@ -32,6 +32,11 @@ impl<'a> UtilsService<'a> {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Api`](crate::Error::Api) when Kavenegar refuses the request, or
+    /// another [`Error`](crate::Error) if it cannot be sent or decoded.
     pub async fn server_time(self) -> Result<ServerTime> {
         self.client
             .call_one(Verb::Post, MODULE, "getdate", Vec::new())

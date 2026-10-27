@@ -9,6 +9,7 @@ use std::future::IntoFuture;
 
 use serde::{Deserialize, Serialize};
 
+use crate::check;
 use crate::client::{BoxFuture, Kavenegar, Verb};
 use crate::de::{lenient_i64, lenient_string};
 use crate::error::{Error, Result};
@@ -24,10 +25,21 @@ type TemplateRequest<'a> = (&'a Kavenegar, &'static str, Vec<(&'static str, Stri
 ///
 /// Every `verify` template endpoint accepts these, so resellers can manage a
 /// customer's templates without holding a separate client per customer.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 struct SubAccount {
     api_key: Option<String>,
     local_id: Option<String>,
+}
+
+impl std::fmt::Debug for SubAccount {
+    /// Redacts the sub-account's API key, which is as much a credential as
+    /// the client's own.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubAccount")
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("local_id", &self.local_id)
+            .finish()
+    }
 }
 
 impl SubAccount {
@@ -300,7 +312,8 @@ impl<'a> IntoFuture for DeleteTemplateBuilder<'a> {
 /// `%token2` and `%token3` may not contain spaces, newlines or underscores;
 /// `%token10` may contain up to 5 spaces and `%token20` up to 8. Values that
 /// break these rules are rejected before the request is sent.
-#[derive(Debug)]
+///
+/// `Debug` hides the token values: they are usually one-time passwords.
 #[must_use = "the message is only sent when the builder is awaited"]
 pub struct LookupBuilder<'a> {
     client: &'a Kavenegar,
@@ -313,6 +326,18 @@ pub struct LookupBuilder<'a> {
     token20: Option<String>,
     channel: Option<VerifyChannel>,
     tag: Option<String>,
+}
+
+impl std::fmt::Debug for LookupBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LookupBuilder")
+            .field("receptor", &self.receptor)
+            .field("template", &self.template)
+            .field("tokens", &"<redacted>")
+            .field("channel", &self.channel)
+            .field("tag", &self.tag)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> LookupBuilder<'a> {
@@ -359,8 +384,9 @@ impl<'a> LookupBuilder<'a> {
     }
 
     fn into_params(self) -> Result<(&'a Kavenegar, Vec<(&'static str, String)>)> {
-        if self.receptor.trim().is_empty() {
-            return Err(Error::invalid("receptor", "must not be empty"));
+        check::number("receptor", &self.receptor)?;
+        if let Some(tag) = &self.tag {
+            check::tag(tag)?;
         }
         if self.template.trim().is_empty() {
             return Err(Error::invalid("template", "must not be empty"));
@@ -543,6 +569,7 @@ impl FallbackMethod {
     }
 
     /// Whether this fallback actually sends anything.
+    #[must_use]
     pub fn is_enabled(self) -> bool {
         self != FallbackMethod::Disabled
     }
@@ -928,6 +955,7 @@ pub struct Template {
 impl Template {
     /// Whether the template has been approved and can be used with
     /// [`VerifyService::lookup`].
+    #[must_use]
     pub fn is_approved(&self) -> bool {
         self.approval_status.eq_ignore_ascii_case("approved")
     }
@@ -959,6 +987,38 @@ mod tests {
                 other => panic!("expected an invalid-parameter error, got {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn debug_hides_tokens_and_sub_account_keys() {
+        let c = client();
+        let lookup = c.verify().lookup("0912", "t", "48391").token2("SECRET2");
+        let shown = format!("{lookup:?}");
+        assert!(
+            !shown.contains("48391") && !shown.contains("SECRET2"),
+            "{shown}"
+        );
+
+        let list = c.verify().templates().sub_account_api_key("CHILDKEY123");
+        let shown = format!("{list:?}");
+        assert!(!shown.contains("CHILDKEY123"), "{shown}");
+    }
+
+    #[test]
+    fn lookup_refuses_a_receptor_list() {
+        let c = client();
+        let err = c
+            .verify()
+            .lookup("09121234567,09131234567", "t", "1")
+            .into_params()
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::InvalidParameter {
+                parameter: "receptor",
+                ..
+            }
+        ));
     }
 
     #[test]

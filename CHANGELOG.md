@@ -45,6 +45,24 @@ Initial release. Covers all 32 endpoints documented at
   (account not verified), which the live API returns but the published table
   does not list.
 - `Error::is_retryable()` to separate transient failures from permanent ones.
+- Every phone and line number must be plain digits with an optional leading
+  `+`, so a user-supplied value such as `"0912…,0913…"` cannot add
+  recipients (SMS pumping). Tags are checked against Kavenegar's alphabet, and
+  the API key against characters that would change the request URL.
+- `Debug` redacts a sub-account's API key and lookup token values, and shows an
+  upload's size rather than its bytes.
+- TLS 1.2 is the minimum on both TLS stacks, and a client with an HTTPS base
+  URL refuses plain-HTTP requests.
+- Kavenegar's error message is stripped of control characters and Unicode
+  direction overrides and capped before it reaches `Display`, so it cannot
+  forge log lines. `Error::Decode`'s `Display` no longer quotes the rejected
+  value, which could be personal data.
+- `Debug` on `send`, `send_array` and `text_to_speech` builders shows counts
+  instead of recipients and message text.
+- Responses are decoded in a single pass over borrowed JSON, and the body is
+  only cleaned up for an error when an error actually happens.
+- `native-tls` selects the platform TLS stack. (In `reqwest` 0.13 the
+  `default-tls` feature means rustls, so it must not be used for this.)
 - Local validation before a request is spent: recipient/message/local-id list
   lengths, the documented per-call limits (200 recipients, 50 unblocks, 500
   message ids), date windows that end before they start, lookup token rules
