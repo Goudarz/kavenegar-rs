@@ -25,8 +25,11 @@ confidence-threshold = 0.9
 multiple-versions = "warn"
 wildcards = "deny"
 # A second TLS stack pulled in by accident means unaudited crypto in the build.
+# OpenSSL is still allowed on the one deliberate path to it: the `native-tls`
+# feature, which on Linux is backed by OpenSSL. Anything else that drags it in
+# fails the check.
 deny = [
-    { name = "openssl", reason = "use the rustls-tls feature, or opt into native-tls deliberately" },
+    { name = "openssl", wrappers = ["native-tls"], reason = "use the rustls-tls feature, or opt into native-tls deliberately" },
 ]
 
 [sources]

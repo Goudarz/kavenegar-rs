@@ -2,8 +2,10 @@
 
 [![crates.io](https://img.shields.io/crates/v/kavenegar.svg)](https://crates.io/crates/kavenegar)
 [![docs.rs](https://docs.rs/kavenegar/badge.svg)](https://docs.rs/kavenegar)
-[![CI](https://github.com/goudarz/kavenegar-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/goudarz/kavenegar-rs/actions/workflows/ci.yml)
-[![license](https://img.shields.io/crates/l/kavenegar.svg)](LICENSE)
+[![CI](https://github.com/Goudarz/kavenegar-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Goudarz/kavenegar-rs/actions/workflows/ci.yml)
+[![MSRV: Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![downloads](https://img.shields.io/crates/d/kavenegar.svg)](https://crates.io/crates/kavenegar)
 
 An async Rust client for the [Kavenegar](https://iff.gg/4GQhL9) SMS, OTP and
 voice-call API.
